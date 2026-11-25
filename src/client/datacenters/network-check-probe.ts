@@ -9,16 +9,13 @@ import {
   type ServerNetworkCheckTarget,
 } from '../../contracts/cell-protocol.ts'
 import type { NetworkCheckServerOutcome } from '../../features/net/server-network-check.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { cellTrace } from '../../lib/logger.ts'
-import { SERVER_NETWORK_CHECK_FEATURE } from '../../lib/version-wire.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 
 /**
  * Ask one host to try its peers (a correlated cell round trip; nothing is
- * stored). Never throws and never waits past `timeoutMs`. Sends nothing to a
- * daemon that does not advertise `server-network-check-v1`: that server reads
- * as "not tested", which never blocks saving.
+ * stored). Never throws and never waits past `timeoutMs`. A server that does
+ * not answer reads as "not tested", which never blocks saving.
  */
 
 /** Each target is cut off after 3 s on the host; the screen waits a little longer. */
@@ -27,7 +24,6 @@ export const NETWORK_CHECK_PROBE_TIMEOUT_MS = 10_000
 /** Seams for hostfree tests; production wires the defaults. */
 export type NetworkCheckProbeDeps = {
   isServerConnected?: (serverId: string) => Promise<boolean>
-  daemonFeatures?: (serverId: string) => Promise<readonly string[]>
 }
 
 function isEntry(value: unknown): value is ServerNetworkCheckEntry {
@@ -50,12 +46,6 @@ export async function probeServerNetworkCheck(
   if (params.targets.length > MAX_DAEMON_WS_NETWORK_CHECK_TARGETS) {
     return { status: 'not_tested', reason: 'error' }
   }
-  const daemonFeatures =
-    deps.daemonFeatures ??
-    (async (serverId: string) => {
-      const state = await getServerDaemonStateByServerId(db, serverId)
-      return state?.projection?.features ?? []
-    })
   const isServerConnected =
     deps.isServerConnected ??
     (async (serverId: string) => {
@@ -65,10 +55,6 @@ export async function probeServerNetworkCheck(
 
   const requestId = generateRequestId()
   try {
-    const features = await daemonFeatures(params.serverId)
-    if (!features.includes(SERVER_NETWORK_CHECK_FEATURE)) {
-      return { status: 'not_tested', reason: 'daemon_update_required' }
-    }
     if (!(await isServerConnected(params.serverId))) {
       return { status: 'not_tested', reason: 'offline' }
     }

@@ -80,6 +80,7 @@ function seededDb(): MemoryDb {
           publicPort: 8443,
           isPrimary: true,
           isDaemonDial: false,
+          behindCdnProxy: false,
           ingressId: null,
           acmeState: null,
           ingressState: null,
@@ -124,8 +125,6 @@ test('a renewal push carries the same edge ranges as a normal apply and records 
   const expected = await buildPublicUrlsPayload({
     db,
     serverId: SERVER_ID,
-    urls: ['https://panel.example.test:8443'],
-    daemonVersion: DAEMON_VERSION,
     secretsConfig: undefined,
     dataEncryptionSecrets: DATA_ENCRYPTION,
     env: {},

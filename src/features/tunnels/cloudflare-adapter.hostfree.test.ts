@@ -155,7 +155,10 @@ test('routes end with a catch-all and point every name at the local web server',
   const rules = buildIngress(['A.example.com', 'a.example.com', 'b.example.com'])
   assertEquals(rules.length, 3)
   assertEquals(rules[0]!.hostname, 'a.example.com')
-  assertEquals(rules[0]!.service, 'https://localhost')
+  assertEquals(rules[0]!.service, 'https://127.0.0.1')
+  // Never the name "localhost": it can resolve to ::1, which a site bound to one
+  // address does not listen on.
+  assertEquals(rules[0]!.service.includes('localhost'), false)
   assertEquals(rules[2], { service: 'http_status:404' })
 
   const { impl, calls } = fakeFetch({
@@ -753,14 +756,15 @@ test("expiry times are read in Cloudflare's form and in ISO form, and nothing el
   }
 })
 
-test('with verification on, routes stop skipping verification and add no certificate file', () => {
-  const rules = buildIngress(['a.example.com'], true)
+test('verification is per name: only the verified names stop skipping it, the rest keep skipping', () => {
+  const rules = buildIngress(['a.example.com', 'b.example.com'], ['A.example.com'])
   assertEquals(rules[0]!.originRequest, {
     httpHostHeader: 'a.example.com',
     originServerName: 'a.example.com',
     noTLSVerify: false,
   })
-  // Left out, the default stays as before.
+  assertEquals(rules[1]!.originRequest?.noTLSVerify, true)
+  // Left out, every name keeps skipping verification.
   assertEquals(buildIngress(['a.example.com'])[0]!.originRequest?.noTLSVerify, true)
 })
 
@@ -795,4 +799,16 @@ test('zones the person names are probed one by one, so a token that cannot list 
   assertEquals(report.capabilities.dns.map((z) => z.id).sort(), ['z8', 'z9'])
   assertEquals(report.capabilities.tunnels, false)
   assert(calls.every((c) => c.method === 'GET'))
+})
+
+test('the ingress fingerprint is stable for the same routes and changes with the built ingress', async () => {
+  const adapter = createCloudflareAdapter({ fetch: fakeFetch({}).impl })
+  const fingerprint = adapter.ingressFingerprint!
+  const a = await fingerprint({ hostnames: ['a.example.com'], verifiedNames: [] })
+  assertEquals(a, await fingerprint({ hostnames: ['A.example.com'], verifiedNames: [] }))
+  assertEquals(a.length, 64)
+  assert(
+    a !== (await fingerprint({ hostnames: ['a.example.com'], verifiedNames: ['a.example.com'] }))
+  )
+  assert(a !== (await fingerprint({ hostnames: ['b.example.com'], verifiedNames: [] })))
 })

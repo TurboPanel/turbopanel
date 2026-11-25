@@ -338,7 +338,7 @@ subscription.
 flexible billing mode, `billing_cycle_anchor_config` at day 1 / 00:00:00 UTC,
 and no `proration_behavior` on create so the default prorates the first month.
 Checkout passes the same block under `subscription_data` (verified accepted on
-`2025-08-27.basil`, not yet re-verified on the pinned `2026-09-30.endive`).
+`2025-08-27.basil`, not yet re-verified on the pinned `2026-11-18.endive`).
 
 ## First Checkout keeps no local record
 
@@ -423,7 +423,7 @@ Both run as optional phases of the Workers maintenance cron
 (`src/daemon/cell/offline-sweep.ts`; stripe-projection every tick, reconcile on
 a minute-divisor predicate, each isolated by
 `runOptionalPhase`), and are skipped entirely when `resolveBillingConfig`
-returns `null`. The Deno maintenance tick has no billing phases.
+returns `null`. The Deno job tick has no billing phases.
 
 ## Footguns that return `200`
 
@@ -659,7 +659,7 @@ without a licence setup step, and it is why the self-hosted session fills `SX`
 into a licensed server with no tier (`fillSelfHostedGrantTier`).
 
 What the Deno bundle still _imports_ from `src/features/billing/` is the
-absent-config no-op path in `src/client/authn/license-lifecycle.ts` and the
+absent-config no-op path in `src/features/billing/config.ts` and the
 licence routes (`c.get('billingConfig')` is simply never set). That is
 import-level coupling, not behaviour; splitting it out is a larger refactor and
 has not been asked for.

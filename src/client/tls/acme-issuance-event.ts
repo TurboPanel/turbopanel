@@ -15,6 +15,7 @@ import { server, tls } from '../../db/schema.ts'
 import { coversHostname, normalizeHostname } from '../../lib/tls/match.ts'
 import type { TlsAcmeMetadata } from '../../lib/tls/types.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { rowsPinnedOnServer } from './issued-certificate.ts'
 import { redactUrlSecrets } from '../../features/upgrades/redact-url-secrets.ts'
 
 export type AcmeIssuanceEventInput = {
@@ -86,11 +87,29 @@ function neverIssued(previous: TlsAcmeMetadata | undefined): boolean {
   return previous?.lastIssuedAt === undefined && previous?.notAfter === undefined
 }
 
+/** A row that failed within this window and recovered is not announced again if it fails again. */
+export const FAILURE_ALERT_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Whether a failed report starts a new failure streak worth announcing: the row
+ * has no standing error, and its last recorded failure (kept across a recovery)
+ * is absent or older than {@link FAILURE_ALERT_INTERVAL_MS}. Without the second
+ * condition, alternating ok and failed reports would announce every failure.
+ */
+function isNewFailureStreak(previous: TlsAcmeMetadata | undefined, nowMs: number): boolean {
+  if (previous?.lastError !== undefined) return false
+  if (previous?.lastFailedAt === undefined) return true
+  const last = Date.parse(previous.lastFailedAt)
+  return Number.isNaN(last) || nowMs - last >= FAILURE_ALERT_INTERVAL_MS
+}
+
 export type AcmeIssuanceEventDeps = {
   /**
    * Called at most once per event, and only when a matching row had no
-   * `lastError` before and now does (an ok-to-failed transition). A hostname
-   * that keeps failing is not announced again until a good probe clears it.
+   * `lastError` before and now does (an ok-to-failed transition) and had no
+   * failure recorded within {@link FAILURE_ALERT_INTERVAL_MS}. A hostname that
+   * keeps failing is not announced again until a good probe clears it, and a
+   * flapping one is announced at most once per interval.
    * Never throws into the caller's write path.
    */
   onNewFailure?: (failure: NewAcmeFailure) => Promise<void>
@@ -99,6 +118,10 @@ export type AcmeIssuanceEventDeps = {
 /**
  * Records the latest issuance outcome on the reporting organization's
  * `automatic` `lets_encrypt` rows whose `dnsNames` cover the hostname.
+ *
+ * **Scoped to the reporting server.** Only rows pinned by a hosting (or a
+ * hostname of one) placed on the reporting server are touched or announced, so
+ * another server in the same organization cannot write state onto them.
  *
  * **Scoped to the reporting server's organization.** Hostname uniqueness is
  * per organization, so two organizations can legitimately hold rows for the
@@ -138,10 +161,13 @@ export async function handleAcmeIssuanceEvent(
   const organizationId = serverRow?.organizationId
   if (!organizationId) return { updated: false }
 
-  const rows = await db
+  const orgRows = await db
     .select({ id: tls.id, status: tls.status, metadata: tls.metadata })
     .from(tls)
     .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.organizationId, organizationId)))
+  // Only rows a hosting on the reporting server pins are its to write: the same
+  // rule `issued-certificate.ts` applies to a supplied certificate.
+  const rows = orgRows.length === 0 ? [] : await rowsPinnedOnServer(db, orgRows, input.serverId)
 
   let updated = false
   let newlyFailing = false
@@ -150,9 +176,13 @@ export async function handleAcmeIssuanceEvent(
     if (row.status !== 'automatic') return
     if (!isResidualMetadata(row.metadata)) return
     if (!coversHostname(row.metadata.dnsNames, hostname)) return
+    // A DNS-proof order proves the name with a TXT record, so it needs no address
+    // record and a failed HTTPS check of the site says nothing about it. The order's
+    // own state owns this row's error and stage.
+    if (!input.ok && row.metadata.acme?.challengeType === 'dns-01') return
 
     const nextAcme = applyIssuanceOutcome(row.metadata.acme, input)
-    if (!input.ok && row.metadata.acme?.lastError === undefined) newlyFailing = true
+    if (!input.ok && isNewFailureStreak(row.metadata.acme, Date.now())) newlyFailing = true
     if (!neverIssued(row.metadata.acme)) firstIssuance = false
 
     await db

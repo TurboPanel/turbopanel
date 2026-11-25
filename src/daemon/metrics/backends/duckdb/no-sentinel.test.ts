@@ -233,11 +233,10 @@ it('no-sentinel: a sample with every host metric explicitly null never surfaces 
     }
     const built = buildMetricsSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(FROM_MS + 60_000).toISOString(),
         intervalSeconds: 60,
         sequence: 1,
-        topologyGeneration: 1,
         bootGeneration: 1,
       },
       host: nullHost,

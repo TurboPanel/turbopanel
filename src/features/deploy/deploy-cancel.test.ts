@@ -19,7 +19,6 @@ import {
   transitionCommand,
 } from '../commands/command-records.ts'
 import type { DeployCancelOutcome } from '../../contracts/cell-protocol.ts'
-import { DEPLOY_CANCEL_FEATURE } from '../../lib/version-wire.ts'
 import {
   CANCEL_REQUESTED_FLAG,
   type CancelDeployDeps,
@@ -50,7 +49,7 @@ type Fixture = {
  * `applying`; with `rollout` the rest wait as later batches.
  */
 async function withDeploy(
-  opts: { count: number; rollout?: boolean; features?: readonly string[] },
+  opts: { count: number; rollout?: boolean },
   fn: (fixture: Fixture) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
@@ -122,9 +121,7 @@ async function withDeploy(
   })
   const answers = new Map<string, DeployCancelOutcome | 'no_answer'>()
   const asked: string[] = []
-  const features = opts.features ?? [DEPLOY_CANCEL_FEATURE]
   const deps: CancelDeployDeps = {
-    daemonFeatures: () => Promise.resolve(features),
     requestCancel: (serverId) => {
       asked.push(serverId)
       return Promise.resolve(answers.get(serverId) ?? 'cancelling')
@@ -267,26 +264,6 @@ test('a host with no such deploy (or no answer) is still marked cancelling so a 
   }
 })
 
-test('a daemon that cannot cancel is refused before anything changes', async () => {
-  await withDeploy({ count: 1, features: ['metrics-v8'] }, async (f) => {
-    await transitionCommand(f.db, f.commandIds[0]!, { status: 'sent' })
-    assertEquals(
-      await cancelEnvironmentDeploy(
-        f.db,
-        undefined,
-        { environmentId: f.environmentId, deploymentId: f.commandIds[0]! },
-        f.deps
-      ),
-      { ok: false, status: 409, error: 'cancel_unsupported' }
-    )
-    assertEquals(f.asked, [])
-    assertEquals(
-      (await getCommandMetadata(f.db, f.commandIds[0]!))?.[CANCEL_REQUESTED_FLAG],
-      undefined
-    )
-  })
-})
-
 test('a running deploy with no way to reach the daemon is a 503, not a silent success', async () => {
   await withDeploy({ count: 1 }, async (f) => {
     await transitionCommand(f.db, f.commandIds[0]!, { status: 'sent' })
@@ -295,7 +272,7 @@ test('a running deploy with no way to reach the daemon is a 503, not a silent su
         f.db,
         undefined,
         { environmentId: f.environmentId, deploymentId: f.commandIds[0]! },
-        { daemonFeatures: f.deps.daemonFeatures }
+        {}
       ),
       { ok: false, status: 503, error: 'daemon_unavailable' }
     )

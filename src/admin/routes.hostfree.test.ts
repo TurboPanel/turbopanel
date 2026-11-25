@@ -566,6 +566,79 @@ test('GET/PUT /settings/email cover db/validation/encryption branches', async ()
   assertEquals(secretWrite.status, 503)
 })
 
+test('PUT /settings/email refuses an SMTP provider on Workers with a stable code', async () => {
+  const workers = await buildApp({ runtime: 'workers' })
+  for (const provider of ['smtp', 'SMTP', 'mailpit-smtp', 'mailpit']) {
+    const res = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      method: 'PUT',
+      headers: { Cookie: workers.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ PROVIDER: provider }),
+    })
+    assertEquals(res.status, 422, provider)
+    const body = await jsonBody<{ error: string; code: string }>(res)
+    assertEquals(body.code, 'email_provider_unsupported_on_workers', provider)
+  }
+  for (const provider of ['mailgun', 'mailpit-api']) {
+    const ok = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      method: 'PUT',
+      headers: { Cookie: workers.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ PROVIDER: provider }),
+    })
+    assertEquals(ok.status, 200, provider)
+  }
+  const unknown = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers: { Cookie: workers.cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ PROVIDER: 'foo' }),
+  })
+  assertEquals(unknown.status, 422)
+  const unknownBody = await jsonBody<{ error: string; code: string }>(unknown)
+  assertEquals(unknownBody.code, 'email_provider_unknown')
+  assertEquals(unknownBody.error.includes('SMTP'), false)
+  // Self-hosted keeps SMTP.
+  const deno = await buildApp()
+  const smtp = await deno.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers: { Cookie: deno.cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ PROVIDER: 'smtp' }),
+  })
+  assertEquals(smtp.status, 200)
+})
+
+test('PUT /settings/email on Workers accepts the settings exactly as GET reports them', async () => {
+  const workers = await buildApp({ runtime: 'workers' })
+  const headers = { Cookie: workers.cookie, 'content-type': 'application/json' }
+  const get = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, { headers })
+  assertEquals(get.status, 200)
+  const { settings } = await jsonBody<{
+    settings: Record<string, { source: string; value: string | null }>
+  }>(get)
+  // Hosted sets no provider; the default it reports must be one it accepts.
+  const providerKey = 'TURBOPANEL_SYSTEM_EMAIL__PROVIDER'
+  assertEquals(settings[providerKey], { source: 'default', value: 'mailgun' })
+
+  // The Admin UI echoes every reported value back on a save with no change.
+  const payload: Record<string, string> = {}
+  for (const [key, meta] of Object.entries(settings)) {
+    if (typeof meta.value === 'string' && meta.value !== '') payload[key] = meta.value
+  }
+  assertEquals(payload[providerKey], 'mailgun')
+  const put = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  assertEquals(put.status, 200)
+
+  // Self-hosted still reports the SMTP default.
+  const deno = await buildApp()
+  const denoGet = await deno.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    headers: { Cookie: deno.cookie },
+  })
+  const denoBody = await jsonBody<{ settings: Record<string, { value: string | null }> }>(denoGet)
+  assertEquals(denoBody.settings[providerKey].value, 'smtp')
+})
+
 test('GET/PUT /settings/auth-providers cover db/validation/encryption branches', async () => {
   const { app, cookie } = await buildApp()
   const get = await app.request(`${ADMIN_API_PREFIX}/settings/auth-providers`, {
@@ -1100,12 +1173,10 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
     applicable: boolean
     connected: boolean
     version: string | null
-    capabilities: Record<string, boolean>
   }>(knownRes)
   assertEquals(knownBody.applicable, true)
   assertEquals(knownBody.connected, true)
   assertEquals(knownBody.version, '0.1.1')
-  assertEquals(knownBody.capabilities['instance-cert-sources-per-hostname'], true)
 
   const unknownId = crypto.randomUUID()
   const unknown = await buildApp({
@@ -1117,12 +1188,9 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
   const unknownRes = await unknown.app.request(`${ADMIN_API_PREFIX}/instance/daemon`, {
     headers: { Cookie: unknown.cookie },
   })
-  const unknownBody = await jsonBody<{
-    version: string | null
-    capabilities: Record<string, boolean>
-  }>(unknownRes)
+  const unknownBody = await jsonBody<{ version: string | null }>(unknownRes)
   assertEquals(unknownBody.version, null)
-  assertEquals(unknownBody.capabilities['instance-cert-sources-per-hostname'], false)
+  assertEquals('capabilities' in unknownBody, false)
 
   const { app, cookie } = await buildApp()
   const missingCa = await app.request(`${ADMIN_API_PREFIX}/instance/platform-ca`, {
@@ -1330,13 +1398,6 @@ test('instance updates: workers refuses the control plane, GET still reports its
     assertEquals(automatic.pausedBy, null)
     assertEquals(automatic.daemonsBehind, false)
     assertEquals(automatic.updateWaiting, false)
-
-    const upgrade = await workers.app.request(`${ADMIN_API_PREFIX}/instance/updates/instance`, {
-      method: 'POST',
-      headers: { Cookie: workers.cookie },
-    })
-    assertEquals(upgrade.status, 410)
-    assertEquals((await jsonBody<{ error: string }>(upgrade)).error, 'updates_automatic')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1406,7 +1467,7 @@ test('instance updates: on Workers the UI is deployed, never offered as an insta
   }
 })
 
-test('every route that started, retried or cancelled an update by hand answers 410 updates_automatic', async () => {
+test('the retired manual-update and next-key routes are gone: they answer 404, never 410', async () => {
   for (const runtime of ['deno', 'workers'] as const) {
     const { app, cookie } = await buildApp({
       runtime,
@@ -1424,12 +1485,13 @@ test('every route that started, retried or cancelled an update by hand answers 4
         method: 'POST',
         headers: { Cookie: cookie },
       })
-      assertEquals(res.status, 410, `${runtime} ${path}`)
-      const body = await jsonBody<{ ok: boolean; error: string; message: string }>(res)
-      assertEquals(body.ok, false)
-      assertEquals(body.error, 'updates_automatic')
-      assertEquals(body.message.includes('Pause All Updates'), true)
+      assertEquals(res.status, 404, `${runtime} ${path}`)
     }
+    const next = await app.request(`${ADMIN_API_PREFIX}/instance/identity/next`, {
+      method: 'PUT',
+      headers: { Cookie: cookie },
+    })
+    assertEquals(next.status, 404, `${runtime} identity/next`)
   }
 })
 

@@ -11,6 +11,7 @@ import {
   type SecretsConfig,
 } from './lib/secrets/secrets.ts'
 import { type AppEnv, createApp } from './app/app.ts'
+import { registerApiNotFound } from './app/invalid-id-error.ts'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
@@ -28,20 +29,27 @@ import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
 import { registerBillingRoutes } from './client/billing/routes.ts'
 import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
 import { resolveBillingConfig } from './features/billing/config.ts'
-import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
+import {
+  registerWorkersDaemonWebSocket,
+  registerWorkersShellWebSocket,
+} from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
-import type { EmailJob, EmailQueue } from './features/email/types.ts'
+import type { EmailQueue } from './features/email/types.ts'
+import {
+  consumeDeadLetterBatch,
+  deadLetterQueueKind,
+  recordDeadLetter,
+} from './features/queues/dead-letter-consumer.ts'
+import { emitNotification } from './features/notifications/emit.ts'
 import { isNoopEmailQueue } from './features/email/noop-queue.ts'
 import { recordEmailDeadLetter } from './features/email/dead-letter-tally.ts'
 import {
   createWorkersQueuedEmailQueue,
+  emailQueueSender,
   settleEmailMessage,
 } from './features/email/workers-mail-queue.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
-import {
-  assertPasswordHasherAvailable,
-  configureArgon2idWorkFactor,
-} from './lib/secrets/password.ts'
+import { configureArgon2idWorkFactor } from './lib/secrets/password.ts'
 import { createWorkersCommandQueue } from './features/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './features/commands/noop-command-queue.ts'
 import type { CommandQueue } from './features/commands/queue.ts'
@@ -97,13 +105,26 @@ import {
   warnIfStripeWebhookRateLimiterMissing,
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
-import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
+import { type createWorkersDb, endDbConnection } from './db/connection.ts'
 import { compatLogError, compatLogInfo, compatLogWarn } from './lib/log-compat.ts'
+import { assertPasswordHasherLoadable } from './lib/secrets/password-smoke.ts'
+import {
+  type EdgeCacheLike,
+  isEdgeCacheableStatusResponse,
+  statusEdgeCacheKey,
+  toEdgeCacheEntry,
+} from './platform/workers/status-edge-cache.ts'
+import {
+  formatServerTiming,
+  isServerTimingRoute,
+  SERVER_TIMING_HEADER,
+} from './platform/server-timing.ts'
 import { dbUsageLine, shouldLogDbUsage } from './query-cache/db-usage.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from './features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -119,6 +140,7 @@ let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
+let cachedShellTicketSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
@@ -145,6 +167,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedTwoFactorChallengeSecrets = null
   cachedBackupCodeVerifierSecrets = null
   cachedWebauthnChallengeSecrets = null
+  cachedShellTicketSecrets = null
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
@@ -156,19 +179,6 @@ export function resetWorkerAppCachesForTests(): void {
   cachedAuthRateLimiter = null
   cachedWriteRateLimiter = null
   cachedDaemonCellRegistryFactory = null
-  lazyEmailQueueResolveCallsForTests = 0
-}
-
-/**
- * @internal Test seam: count of `resolveWorkersEmailQueue()` calls made by
- * {@link createLazyWorkersEmailQueue}. ESM imports cannot be monkeypatched
- * from a test, so the lazy resolver's own call count is the seam — a
- * rate-limited or non-email-sending request must leave this at 0.
- */
-let lazyEmailQueueResolveCallsForTests = 0
-
-export function resetLazyEmailQueueResolveCallsForTests(): void {
-  lazyEmailQueueResolveCallsForTests = 0
 }
 
 /** @internal Test seam: every route path registered on the cached Worker app. */
@@ -176,48 +186,29 @@ export function getWorkerAppRoutePathsForTests(): readonly string[] {
   return cachedApp?.routes.map((route) => route.path) ?? []
 }
 
-export function getLazyEmailQueueResolveCallsForTests(): number {
-  return lazyEmailQueueResolveCallsForTests
+/** Per-colo Workers Cache API (not on the type of the shared `caches` global). */
+function edgeCache(): EdgeCacheLike {
+  return (globalThis.caches as unknown as { default: EdgeCacheLike }).default
 }
 
 /**
- * Wrap {@link resolveWorkersEmailQueue} in an `EmailQueue` that only resolves
- * (and memoizes) the real queue when a caller actually enqueues a job.
- *
- * Resolving eagerly on every request means every webhook delivery, health
- * check, and auth probe pays a DB read plus an AES-GCM decrypt of the
- * Mailgun/SMTP secret before the route (or the auth rate limiter) ever sees
- * the request — see `src/workers.ts` module docs and the `fetch` handler.
- * Deferring to first `enqueue()` means that cost is paid only by the routes
- * that actually send email, and only after those routes' own rate limiting.
+ * Mail always goes through the platform queue: that is where a failed send is
+ * retried and, in the end, dead-lettered. A Worker without the binding would
+ * have to send from the request with neither, so it refuses to start instead.
  */
-function createLazyWorkersEmailQueue(
-  db: Db | undefined,
-  platformEnv: Record<string, string | undefined>,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
-): EmailQueue {
-  let resolved: Promise<EmailQueue> | null = null
-  const resolve = (): Promise<EmailQueue> => {
-    resolved ??= (() => {
-      lazyEmailQueueResolveCallsForTests += 1
-      return resolveWorkersEmailQueue(db, platformEnv, dataEncryptionSecrets)
-    })()
-    return resolved
+function requireEmailQueueBinding(
+  env: CloudflareBindings
+): NonNullable<typeof env.TURBOPANEL_EMAIL_QUEUE> {
+  if (!env.TURBOPANEL_EMAIL_QUEUE) {
+    throw new Error(
+      'TURBOPANEL_EMAIL_QUEUE is not bound: system mail needs the platform mail queue (see wrangler.jsonc)'
+    )
   }
-  return {
-    async enqueue(job) {
-      const queue = await resolve()
-      await queue.enqueue(job)
-    },
-    async close() {
-      if (!resolved) return
-      const queue = await resolved
-      await queue.close?.()
-    },
-  }
+  return env.TURBOPANEL_EMAIL_QUEUE
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
+  requireEmailQueueBinding(env)
   setTcpProbe(createWorkersTcpProbe(connectSocket))
   setRevokeBoundDaemonKey(revokeDaemonKey)
   registerCommandRuntimePorts({
@@ -241,31 +232,41 @@ async function initWorkerApp(env: CloudflareBindings) {
     memoryKib: env.TURBOPANEL_ARGON2ID_MEMORY_KIB,
     timeCost: env.TURBOPANEL_ARGON2ID_TIME_COST,
   })
-  await assertPasswordHasherAvailable()
+  // Full hash + verify at the real work factor costs seconds of pure-JS CPU on
+  // the first request of every new isolate; the Deno boot path still runs it.
+  // Here a minimal-parameter round trip proves the library loads.
+  await assertPasswordHasherLoadable()
   cachedSecretsConfig = secretsConfig
-  cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  cachedOtpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
-  cachedTwoFactorChallengeSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    TWO_FACTOR_CHALLENGE_PURPOSE
-  )
-  cachedBackupCodeVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    BACKUP_CODE_VERIFIER_PURPOSE
-  )
-  cachedWebauthnChallengeSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    WEBAUTHN_CHALLENGE_PURPOSE
-  )
-  cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
-  cachedChallengeSigningSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    'daemon-challenge-signing'
-  )
-  cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(
-    secretsConfig,
-    'data-encryption'
-  )
+  const [
+    sessionSecrets,
+    otpVerifierSecrets,
+    twoFactorChallengeSecrets,
+    backupCodeVerifierSecrets,
+    webauthnChallengeSecrets,
+    shellTicketSecrets,
+    daemonJwtKeyring,
+    challengeSigningSecrets,
+    dataEncryptionSecrets,
+  ] = await Promise.all([
+    deriveSecretsConfig(secretsConfig, 'session-signing'),
+    deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE),
+    deriveSecretsConfig(secretsConfig, TWO_FACTOR_CHALLENGE_PURPOSE),
+    deriveSecretsConfig(secretsConfig, BACKUP_CODE_VERIFIER_PURPOSE),
+    deriveSecretsConfig(secretsConfig, WEBAUTHN_CHALLENGE_PURPOSE),
+    deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE),
+    deriveDaemonJwtKeyring(secretsConfig),
+    deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing'),
+    deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption'),
+  ])
+  cachedSessionSecrets = sessionSecrets
+  cachedOtpVerifierSecrets = otpVerifierSecrets
+  cachedTwoFactorChallengeSecrets = twoFactorChallengeSecrets
+  cachedBackupCodeVerifierSecrets = backupCodeVerifierSecrets
+  cachedWebauthnChallengeSecrets = webauthnChallengeSecrets
+  cachedShellTicketSecrets = shellTicketSecrets
+  cachedDaemonJwtKeyring = daemonJwtKeyring
+  cachedChallengeSigningSecrets = challengeSigningSecrets
+  cachedDataEncryptionSecrets = dataEncryptionSecrets
   // Missing binding = feature off (the panel runs); a malformed one fails init.
   cachedPanelIdentity = await resolvePanelIdentityFromBinding(env.TURBOPANEL_IDENTITY_KEYS)
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
@@ -306,6 +307,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     twoFactorChallengeSecrets: cachedTwoFactorChallengeSecrets ?? undefined,
     backupCodeVerifierSecrets: cachedBackupCodeVerifierSecrets ?? undefined,
     webauthnChallengeSecrets: cachedWebauthnChallengeSecrets ?? undefined,
+    shellTicketSecrets: cachedShellTicketSecrets ?? undefined,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
@@ -344,6 +346,10 @@ async function initWorkerApp(env: CloudflareBindings) {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+  })
+  registerWorkersShellWebSocket(daemonRoutes, {
+    ticketSecrets: cachedShellTicketSecrets ?? undefined,
+    corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see
@@ -408,9 +414,7 @@ async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBi
       stringBindingEnv(env),
       cachedDataEncryptionSecrets ?? undefined
     )
-    const sender = isNoopEmailQueue(direct)
-      ? null
-      : { send: (job: EmailJob) => direct.enqueue(job) }
+    const sender = isNoopEmailQueue(direct) ? null : emailQueueSender(direct)
     await forEachSequential(batch.messages, async (message) => {
       await settleEmailMessage({
         message,
@@ -421,6 +425,50 @@ async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBi
     })
   } catch {
     batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
+  } finally {
+    if (db) await endDbConnection(db).catch(() => {})
+  }
+}
+
+/**
+ * The dead-letter queue consumer: records each message as a redacted audit row,
+ * acks it, and tells the install's administrators (`dead-letter-consumer.ts`).
+ * Without a database the batch is retried, so nothing is dropped for want of one.
+ */
+async function consumeDeadLetterQueue(
+  kind: NonNullable<ReturnType<typeof deadLetterQueueKind>>,
+  batch: MessageBatch<unknown>,
+  env: CloudflareBindings
+) {
+  const db = resolveWorkersDb(env)
+  try {
+    if (!db) {
+      batch.retryAll()
+      return
+    }
+    await consumeDeadLetterBatch(kind, batch.messages, {
+      record: (record) => recordDeadLetter(db, record),
+      notify: async (record, alert) => {
+        // Never throws; the audit row is already written.
+        await emitNotification(
+          db,
+          cachedDataEncryptionSecrets ?? undefined,
+          {
+            event: 'queue.dead_lettered',
+            context: {
+              queue: record.queue,
+              type: record.type,
+              attempts: record.attempts,
+              error: record.error,
+              alert,
+            },
+          },
+          { allowPrivateTargets: true }
+        )
+      },
+    })
+  } catch {
+    batch.retryAll()
   } finally {
     if (db) await endDbConnection(db).catch(() => {})
   }
@@ -459,8 +507,22 @@ function applyDeliveryOutcome(msg: Message<unknown>, outcome: DeliveryOutcome): 
 
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
-    initPromise ??= initWorkerApp(env)
-    await initPromise
+    // Public /status is answered from the colo's cache before the app (and a
+    // cold isolate's init) runs; see platform/workers/status-edge-cache.ts.
+    const statusKey = statusEdgeCacheKey(request)
+    if (statusKey) {
+      const cached = await edgeCache().match(statusKey)
+      if (cached) return cached
+    }
+    const requestStartedAt = performance.now()
+    let initMs: number | undefined
+    if (initPromise === null) {
+      initPromise = initWorkerApp(env)
+      await initPromise
+      initMs = performance.now() - requestStartedAt
+    } else {
+      await initPromise
+    }
 
     const postgresConnectionString =
       env.HYPERDRIVE?.connectionString ?? env.TURBOPANEL_DATABASE_URL?.trim() ?? undefined
@@ -474,21 +536,10 @@ export default {
       // Per request, like platformEnv — a dashboard secret change applies
       // without an isolate recycle. Absence *is* billing off.
       const billingConfig = resolveBillingConfig(platformEnv)
-      // Lazy: resolving email settings decrypts the Mailgun/SMTP secret on
-      // every call, so it must not run ahead of routing (or the auth rate
-      // limiter) for requests that never send email — a webhook flood or an
-      // unauthenticated auth probe would otherwise spend that DB read + AES-GCM
-      // decrypt before any throttle sees the request. `enqueue()` resolves
-      // (and memoizes) the real queue on first use, from the *current*
-      // DB/platform env, so admin PUT /settings/email still takes effect
-      // without restarting the Worker — same as the eager resolve this
-      // replaces, just deferred to the route that actually needs it.
-      // With the mail queue binding, a request only puts the job on the queue
-      // (no settings read at all); the queue consumer sends it, with retries
+      // A request only puts the job on the queue (no settings read at all);
+      // the queue consumer sends it, with retries
       // and a dead-letter queue (`features/email/workers-mail-queue.ts`).
-      const emailQueue: EmailQueue = env.TURBOPANEL_EMAIL_QUEUE
-        ? createWorkersQueuedEmailQueue(env.TURBOPANEL_EMAIL_QUEUE)
-        : createLazyWorkersEmailQueue(db, platformEnv, cachedDataEncryptionSecrets ?? undefined)
+      const emailQueue: EmailQueue = createWorkersQueuedEmailQueue(requireEmailQueueBinding(env))
       const requestApp = new Hono<AppEnv>()
       requestApp.use('*', async (c, next) => {
         // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
@@ -529,6 +580,17 @@ export default {
         try {
           await next()
         } finally {
+          // Allowlisted routes only (see platform/server-timing.ts): never on auth routes.
+          if (isServerTimingRoute(c.req.method, c.req.path) && c.res.status !== 101) {
+            c.header(
+              SERVER_TIMING_HEADER,
+              formatServerTiming({
+                initMs,
+                dbStatements: dbHandles.usage.primary + dbHandles.usage.cached,
+                appMs: performance.now() - requestStartedAt - (initMs ?? 0),
+              })
+            )
+          }
           // One line per request that touched the database (see query-cache/db-usage.ts).
           const line = dbUsageLine(c.req.routePath, dbHandles.usage)
           if (line && shouldLogDbUsage(dbHandles.usage)) {
@@ -536,11 +598,12 @@ export default {
           }
         }
       })
+      registerApiNotFound(requestApp)
       requestApp.route('/', cachedApp!)
 
       // A GET/HEAD that failed on a dropped database connection is replayed
       // once on a fresh one (`platform/workers/connection-retry.ts`).
-      return await fetchWithConnectionRetry(requestApp, request, env, ctx, {
+      const response = await fetchWithConnectionRetry(requestApp, request, env, ctx, {
         onRetry: (method, path) =>
           compatLogWarn(
             'db',
@@ -554,6 +617,14 @@ export default {
           queryCache = dbHandles.queryCache
         },
       })
+      if (statusKey && isEdgeCacheableStatusResponse(response)) {
+        ctx.waitUntil(
+          edgeCache()
+            .put(statusKey, toEdgeCacheEntry(response))
+            .catch(() => {})
+        )
+      }
+      return response
     } finally {
       ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}))
     }
@@ -587,6 +658,11 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
     initPromise ??= initWorkerApp(env)
     await initPromise
+    const deadLetterKind = deadLetterQueueKind(batch.queue)
+    if (deadLetterKind) {
+      await consumeDeadLetterQueue(deadLetterKind, batch, env)
+      return
+    }
     if (isEmailQueueName(batch.queue)) {
       await consumeEmailBatch(batch, env)
       return

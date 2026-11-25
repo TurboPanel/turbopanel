@@ -26,7 +26,6 @@ function validRaw(
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
       ...metadata,
     },
@@ -105,11 +104,8 @@ describe('validateMetricsSample', () => {
       expect(result.ok).toBe(false)
     })
 
-    it('rejects a negative sequence/topologyGeneration/bootGeneration', () => {
+    it('rejects a negative sequence/bootGeneration', () => {
       expect(validateMetricsSample(validRaw({ metadata: { sequence: -1 } }), ctx()).ok).toBe(false)
-      expect(
-        validateMetricsSample(validRaw({ metadata: { topologyGeneration: -1 } }), ctx()).ok
-      ).toBe(false)
       expect(validateMetricsSample(validRaw({ metadata: { bootGeneration: -1 } }), ctx()).ok).toBe(
         false
       )

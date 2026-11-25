@@ -511,7 +511,10 @@ export const organizationSchemas = {
           properties: {
             fromServerId: { type: 'string', format: 'uuid' },
             toServerId: { type: 'string', format: 'uuid' },
-            path: { type: 'string', enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'] },
+            path: {
+              type: 'string',
+              enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'],
+            },
             reason: { type: 'string' },
             tunnel: {
               type: 'object',
@@ -996,6 +999,95 @@ export const organizationPaths: Record<string, unknown> = {
         },
       },
     },
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Delete an organization',
+      description:
+        'Owner of the organization or a platform admin. A person who cannot see the organization at all gets 404, as on GET; one who can but is not the owner (a manager, a member) gets 403. Always asks for a recent re-authentication, whatever the organization setting says (403 `reauth_required`, action `organization.delete`). `confirmName` must be the exact organization name (400 `confirm_name_required`). Refused with 409 `root_organization` for the platform root organization (a pinned id, so renaming it changes nothing), `organization_has_servers` (with `serverCount`) while any server remains, `organization_has_tunnels` (with `tunnelCount`) and `organization_has_dns_records` (with `dnsRecordCount`); remove those first. Servers are never moved to another organization. The blockers are checked again under a row lock inside the delete, so a server added meanwhile also answers 409. On success everything the organization owns, including its permission grants, is deleted in one transaction together with its audit row (`organization.delete`, no organization id). The caller may now belong to no organization: `GET /organizations` then answers `{ organizations: [] }` and `POST /organizations` creates the next one (the session stays valid).',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+        {
+          name: 'confirmName',
+          in: 'query',
+          required: true,
+          schema: { type: 'string' },
+          description: 'The exact organization name (a nameless one goes by its id).',
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Deleted',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  id: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: '`confirm_name_required`, with a `message` to show',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description:
+            'Forbidden (not the owner or a platform admin), or `reauth_required` with `action`, `methods` and `windowSeconds`',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description:
+            '`error` and `code` are one of `root_organization`, `organization_has_servers` (`serverCount`), `organization_has_tunnels` (`tunnelCount`), `organization_has_dns_records` (`dnsRecordCount`), with a `message` to show',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
   },
   '/api/client/v1/organizations/{id}/default-timezone': {
     get: {
@@ -1261,7 +1353,9 @@ export const organizationPaths: Record<string, unknown> = {
         required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/OrganizationTlsSettingsUpdate' },
+            schema: {
+              $ref: '#/components/schemas/OrganizationTlsSettingsUpdate',
+            },
           },
         },
       },
@@ -2005,23 +2099,18 @@ export const organizationPaths: Record<string, unknown> = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: [
-                  'nameScheme',
-                  'effectiveNameScheme',
-                  'schemeLocked',
-                  'randomizedUsernames',
-                  'effectiveRandomizedUsernames',
-                ],
+                required: ['nameScheme', 'effectiveNameScheme', 'schemeLocked'],
                 properties: {
                   nameScheme: {
                     type: 'string',
                     enum: ['plain', 'partial', 'random'],
                     nullable: true,
                   },
-                  effectiveNameScheme: { type: 'string', enum: ['plain', 'partial', 'random'] },
+                  effectiveNameScheme: {
+                    type: 'string',
+                    enum: ['plain', 'partial', 'random'],
+                  },
                   schemeLocked: { type: 'boolean' },
-                  randomizedUsernames: { type: 'boolean', nullable: true },
-                  effectiveRandomizedUsernames: { type: 'boolean' },
                 },
               },
             },
@@ -2049,7 +2138,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Update organization principal defaults',
       description:
-        'Manage-gated (owner or manager). Sets organization.options.principalNameScheme (null clears to the platform default, partial) and/or principalNameSchemeLocked. When locked, creating a principal with a different nameScheme fails with 409 principal_scheme_locked; the lock applies only at creation. The legacy randomizedUsernames boolean is still accepted (true = partial, false = plain, null = default). Only affects principals created afterwards - existing system names are never renamed.',
+        'Manage-gated (owner or manager). Sets organization.options.principalNameScheme (null clears to the platform default, partial) and/or principalNameSchemeLocked. When locked, creating a principal with a different nameScheme fails with 409 principal_scheme_locked; the lock applies only at creation. Only affects principals created afterwards - existing system names are never renamed.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2072,7 +2161,6 @@ export const organizationPaths: Record<string, unknown> = {
                   nullable: true,
                 },
                 schemeLocked: { type: 'boolean' },
-                randomizedUsernames: { type: 'boolean', nullable: true },
               },
             },
           },
@@ -2138,7 +2226,10 @@ export const organizationPaths: Record<string, unknown> = {
                     enum: ['slug', 'uuid', 'both'],
                     nullable: true,
                   },
-                  effectiveNames: { type: 'string', enum: ['slug', 'uuid', 'both'] },
+                  effectiveNames: {
+                    type: 'string',
+                    enum: ['slug', 'uuid', 'both'],
+                  },
                   locked: { type: 'boolean' },
                   lockedByFolders: { type: 'boolean' },
                 },
@@ -2422,7 +2513,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Enable or disable TurboFabric',
       description:
-        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` pauses: every server takes `tp0` down and keeps its key, routed bridges and forwarding rules (`server.fabric.reconcile` `{ enabled: false, retainKeys: true }`), and the fabric row, relays and container networks are kept, so `{ enabled: true }` turns it back on instantly. A pause is refused with 409 `fabric_pause_needs_daemon_update` (with `message` and `serverIds`) while any member's daemon does not list `fabric-retain-keys-v1`. DELETE removes TurboFabric completely. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
+        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` pauses: every server takes `tp0` down and keeps its key, routed bridges and forwarding rules (`server.fabric.reconcile` `{ enabled: false, retainKeys: true }`), and the fabric row, relays and container networks are kept, so `{ enabled: true }` turns it back on instantly. DELETE removes TurboFabric completely. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2491,7 +2582,12 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims the `network(kind='compose')` / `subnet` rows of networks that need a tunnel. A container network whose servers all share a trusted datacenter network (each pair a trusted LAN pair) is kept, and those servers are sent the payload with no tunnel again (`tunnel: false`, LAN routes), since the teardown removed their LAN routes. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. Servers switched out of the mesh are torn down too (they kept their key). 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps the fabric row, relays and container networks when a teardown could not be queued; servers that were already reached have dropped their tunnel and key and get a new key on the next apply. Returns the cleared settings.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       responses: {
         '200': {
@@ -2615,7 +2711,12 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter network LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
         {
           name: 'serverId',
           in: 'path',
@@ -2631,7 +2732,11 @@ export const organizationPaths: Record<string, unknown> = {
               type: 'object',
               properties: {
                 enabled: { type: 'boolean' },
-                role: { type: 'string', enum: ['gateway', 'client'], nullable: true },
+                role: {
+                  type: 'string',
+                  enum: ['gateway', 'client'],
+                  nullable: true,
+                },
               },
             },
           },
@@ -2647,7 +2752,9 @@ export const organizationPaths: Record<string, unknown> = {
                 required: ['ok'],
                 properties: {
                   ok: { type: 'boolean' },
-                  server: { $ref: '#/components/schemas/OrganizationFabricServer' },
+                  server: {
+                    $ref: '#/components/schemas/OrganizationFabricServer',
+                  },
                 },
               },
             },
@@ -2733,15 +2840,30 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. Lists the organization's folder rows that a person can act on or is waiting for: orphan (on a server with no service or volume that owns it), removing (asked to go, the host has not confirmed) and missing (the host no longer has it). Filter with state (comma separated), page with limit (1 to 100, default 50) and offset. reason is plain words, including what the host said the last time it kept a removing folder. action says what POST /folders/{id}/remove would do: remove (an orphan), retry (ask again now) or forget (a missing row); null for a folder in use.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
         {
           name: 'state',
           in: 'query',
           required: false,
           schema: { type: 'string', example: 'orphan,removing' },
         },
-        { name: 'limit', in: 'query', required: false, schema: { type: 'integer' } },
-        { name: 'offset', in: 'query', required: false, schema: { type: 'integer' } },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer' },
+        },
+        {
+          name: 'offset',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer' },
+        },
       ],
       responses: {
         '200': {
@@ -2762,13 +2884,20 @@ export const organizationPaths: Record<string, unknown> = {
                       properties: {
                         id: { type: 'string', format: 'uuid' },
                         kind: { type: 'string', enum: ['service', 'volume'] },
-                        state: { type: 'string', enum: ['orphan', 'removing', 'missing'] },
+                        state: {
+                          type: 'string',
+                          enum: ['orphan', 'removing', 'missing'],
+                        },
                         scope: { type: 'string' },
                         slug: { type: 'string' },
                         owner: { type: 'string' },
                         serverId: { type: 'string', format: 'uuid' },
                         serverName: { type: 'string', nullable: true },
-                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetId: {
+                          type: 'string',
+                          format: 'uuid',
+                          nullable: true,
+                        },
                         assetName: { type: 'string', nullable: true },
                         hasAsset: { type: 'boolean' },
                         reason: { type: 'string', nullable: true },
@@ -2813,7 +2942,12 @@ export const organizationPaths: Record<string, unknown> = {
         'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present), or an orphan a service or volume row still names, is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       responses: {
         '200': {

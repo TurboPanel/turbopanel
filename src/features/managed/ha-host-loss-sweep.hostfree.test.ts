@@ -6,7 +6,6 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
-import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
   DEFAULT_HOST_LOSS_WINDOW_MS,
@@ -121,7 +120,7 @@ async function sweep(
       Promise.resolve(new Map(ids.map((id) => [id, world.connected?.[id] ?? true]))),
     serverFacts: () =>
       Promise.resolve({
-        features: [MANAGED_HA_BOOT_HOLD_FEATURE],
+        daemonSupported: true,
         updateInFlight: false,
         rebootRecently: false,
         ...world.facts,
@@ -385,12 +384,6 @@ test('MySQL and MariaDB are probed like Postgres: the peers decide', async () =>
     assertEquals(first?.result === 'alert' && first.code === 'engine_unsupported', false)
     assertEquals(calls.probes.length > 0, true)
   }
-})
-
-test('a daemon without the boot hold: alert only', async () => {
-  const { outcomes, calls } = await sweep({ facts: { features: ['managed-health-v1'] } })
-  assertEquals(outcomes[0], { managedId: MANAGED_ID, result: 'alert', code: 'daemon_too_old' })
-  assertEquals(calls.failovers, [])
 })
 
 test('an operator reboot or a daemon update in progress waits', async () => {

@@ -14,7 +14,6 @@ import { registerDevUpdateOverlay } from './developer/dev-update-overlay.ts'
 import { registerDevelopmentUpdatesAdminRoutes } from './developer/development-updates-routes.ts'
 import { registerDeveloperRoutes } from './developer/routes.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
-import { registerTunnelRoutes } from './developer/tunnel-routes.ts'
 import { registerUpdateRoutes } from './developer/update-routes.ts'
 import { startDenoServer } from './platform/deno/server.ts'
 
@@ -27,7 +26,6 @@ await startDenoServer({
     registerVersionRoute(routes)
     registerSystemRoutes(routes, { secrets: sessionSecrets, db })
     registerDevSyncRoutes(routes, { secrets: sessionSecrets })
-    registerTunnelRoutes(routes, { secrets: sessionSecrets })
     registerUpdateRoutes(routes, { secrets: sessionSecrets })
     registerDevHostDeveloperRoutes(routes, { secrets: sessionSecrets })
     // The daemon target is the local overlay build, never the public CDN;

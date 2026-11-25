@@ -130,6 +130,25 @@ test('a client cannot claim a host-level Compose approval on create or patch', (
   assertEquals(created.metadata, { team: 'payments' })
 })
 
+test('a client cannot claim a network-share approval on create or patch', () => {
+  const claimed = {
+    composeNetworkSharesApproval: {
+      fingerprint: 'f'.repeat(64),
+      approvedBy: validUuid,
+      approvedAt: '2026-09-25T00:00:00.000Z',
+    },
+    team: 'payments',
+  }
+  const patched = parseEnvironmentPatchMetadata({ metadata: claimed })
+  if (!patched.ok || patched.metadata === 'absent' || patched.metadata === null) {
+    throw new TypeError('expected parsed metadata')
+  }
+  assertEquals(patched.metadata, { team: 'payments' })
+  const created = parseCreateEnvironmentJsonb({ metadata: claimed })
+  if (!created.ok) throw new TypeError('expected valid create')
+  assertEquals(created.metadata, { team: 'payments' })
+})
+
 test('parseEnvironmentPatchOptions rejects invalid compose', () => {
   const invalid = parseEnvironmentPatchOptions({ options: 'bad' })
   assertEquals(invalid.ok, false)

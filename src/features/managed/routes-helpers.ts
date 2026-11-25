@@ -764,9 +764,56 @@ export function parseManagedLoginGrantFields(
   }
 }
 
+/** FNV-1a over the Unicode code points, 32 bits: a stable, dependency-free digest. */
+function fnv1a32(text: string): number {
+  let hash = 0x811c9dc5
+  for (const ch of text) {
+    hash ^= ch.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash
+}
+
+/** Hex characters of the digest kept on a mapped name. */
+const MAPPED_LOGIN_DIGEST_LENGTH = 6
+
 /**
- * Whether an existing principal's applied name can be this engine's role
- * name as-is (a login for a principal never renames). `null` when it fits.
+ * The engine role name for a login that belongs to an existing principal.
+ *
+ * A Linux user name may carry a hyphen, which engine role names here do not
+ * take (`^[A-Za-z_]\w*`). A name the engine takes is used as-is. Any other
+ * name is mapped: every character outside letters, digits and underscore
+ * becomes `_`, the base is cut so the whole name fits the engine's length
+ * limit, and `_<6 hex digits>` of a digest of the original name is appended.
+ * The digest keeps `a-b` and `a_b` (which both map to `a_b` otherwise) apart.
+ * The result depends only on the applied name and the engine's limits, so it
+ * is the same on every cluster and on every attempt. `null` when no valid
+ * name can be built. The caller still probes the organization pool for the
+ * mapped name inside the create transaction.
+ */
+export function engineLoginNameForPrincipal(
+  spec: ManagedContext['spec'],
+  appliedUsername: string
+): string | null {
+  const { pattern, maxLength } = spec.userOperations.identifier
+  if (pattern.test(appliedUsername) && appliedUsername.length <= maxLength) {
+    return appliedUsername
+  }
+  const digest = fnv1a32(appliedUsername)
+    .toString(16)
+    .padStart(8, '0')
+    .slice(-MAPPED_LOGIN_DIGEST_LENGTH)
+  const room = maxLength - MAPPED_LOGIN_DIGEST_LENGTH - 1
+  if (room < 1) return null
+  const base = appliedUsername.replace(/\W/g, '_').slice(0, room)
+  const mapped = `${base}_${digest}`
+  return pattern.test(mapped) && mapped.length <= maxLength ? mapped : null
+}
+
+/**
+ * Whether a login for an existing principal can get an engine role name that
+ * is not reserved (see {@link engineLoginNameForPrincipal}). `null` when it
+ * fits.
  */
 export function evaluateExistingPrincipalLoginName(
   spec: ManagedContext['spec'],
@@ -774,13 +821,14 @@ export function evaluateExistingPrincipalLoginName(
   rootUsername?: string
 ): { error: string; message: string } | null {
   const { pattern, maxLength } = spec.userOperations.identifier
-  if (!pattern.test(appliedUsername) || appliedUsername.length > maxLength) {
+  const engineName = engineLoginNameForPrincipal(spec, appliedUsername)
+  if (engineName === null) {
     return {
       error: 'principal_name_does_not_fit',
-      message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
+      message: `The principal's name '${appliedUsername}' cannot be turned into a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
     }
   }
-  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername, spec.engine)) {
+  if (isReservedManagedUsername(engineName, rootUsername ?? spec.rootUsername, spec.engine)) {
     return {
       error: 'principal_name_reserved',
       message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,

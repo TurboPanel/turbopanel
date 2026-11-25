@@ -80,7 +80,6 @@ test('resolveSitePhpMode stamps the default, and warns when it keeps a narrowed 
 test('withSitePhpModes resolves this server only and refuses a disallowed switch', async () => {
   const warnings: unknown[] = []
   const ctx = {
-    daemonRunsModes: true,
     environmentId: 'env',
     serverId: 'srv',
     localServiceNames: new Set(['blog']),
@@ -117,17 +116,4 @@ test('withSitePhpModes resolves this server only and refuses a disallowed switch
   const upstream = { kind: 'site_cron_unowned', composeServiceName: 'blog' }
   assertEquals(await withSitePhpModes(deploymentDb(undefined), ctx, upstream), upstream)
   assertEquals(warnings, [])
-})
-
-test('a daemon without php-site-modes-v1 is never stamped and refuses other modes', () => {
-  const blog = site('blog', 'nginx', { version: '8.4' })
-  // Nothing asked: left alone, so the old daemon's shared pool is untouched.
-  assertEquals(resolveSitePhpMode(blog, undefined, {}, undefined, false), { site: blog })
-  assertEquals(resolveSitePhpMode(blog, 'fpm', {}, undefined, false), { site: blog })
-  const refused = resolveSitePhpMode(blog, 'fastcgi', {}, undefined, false)
-  assertEquals('error' in refused && refused.error.reason, 'daemon_unsupported')
-  assertEquals('error' in refused && refused.error.allowed, ['fpm'])
-  // With the feature the default is stamped.
-  const stamped = resolveSitePhpMode(blog, undefined, {}, undefined, true)
-  assertEquals('site' in stamped && stamped.site.php?.mode, 'fastcgi')
 })

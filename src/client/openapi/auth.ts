@@ -1,3 +1,5 @@
+import { apiErrorSchema } from '../../lib/http/error-schema.ts'
+
 const denoClientStatusSchema = {
   type: 'object',
   required: [
@@ -145,14 +147,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
       },
     },
     ClientStatus: includeInstall ? denoClientStatusSchema : workersClientStatusSchema,
-    ErrorResponse: {
-      type: 'object',
-      required: ['ok'],
-      properties: {
-        ok: { type: 'boolean', const: false },
-        error: { type: 'string' },
-      },
-    },
+    ErrorResponse: apiErrorSchema,
     UnauthorizedResponse: {
       type: 'object',
       required: ['ok'],

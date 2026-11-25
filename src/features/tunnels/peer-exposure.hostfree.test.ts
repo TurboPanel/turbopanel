@@ -4,6 +4,7 @@
  * preview its firewall again.
  */
 import { assert, assertEquals } from '@std/assert'
+import { TUNNEL_PEER_PORT } from '../../contracts/commands/tunnel-routes.ts'
 import { deriveFirewall, type FirewallDeriveInput } from '../firewall/derive.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from '../firewall/policy.ts'
 import { MAX_FIREWALL_RULE_ADDRESSES } from '../firewall/vocabulary.ts'
@@ -18,7 +19,7 @@ function inputWith(peers: string[]): FirewallDeriveInput {
     sshPortHint: 22,
     coLocated: false,
     controlPlaneTcpPorts: [],
-    exposures: tunnelPeerExposures(peers),
+    exposures: tunnelPeerExposures(peers, TUNNEL_PEER_PORT),
     edicts: [],
     sources: { servers: [], datacenter: ['10.0.0.0/24'], fabric: [] },
   }
@@ -29,7 +30,7 @@ function derive(peers: string[]) {
 }
 
 test('no inbound peers means no rule', () => {
-  assertEquals(tunnelPeerExposures([]), [])
+  assertEquals(tunnelPeerExposures([], TUNNEL_PEER_PORT), [])
   assertEquals(derive([]).rules, [])
 })
 
@@ -37,15 +38,15 @@ test('peers get HTTPS only, from their exact addresses and never the whole datac
   const { rules } = derive(['10.0.0.10', 'fd00::10'])
   assertEquals(rules.length, 1)
   const rule = rules[0]!
-  assertEquals([rule.action, rule.scope, rule.proto, rule.ports], ['accept', 'host', 'tcp', '443'])
+  assertEquals([rule.action, rule.scope, rule.proto, rule.ports], ['accept', 'host', 'tcp', '9443'])
   assertEquals(rule.sources, ['10.0.0.10/32', 'fd00::10/128'])
   assertEquals(rule.comment, TUNNEL_PEER_COMMENT)
 })
 
 test('a range is never turned into a rule, only bare addresses are', () => {
-  assertEquals(tunnelPeerExposures(['10.0.0.0/24']), [])
+  assertEquals(tunnelPeerExposures(['10.0.0.0/24'], TUNNEL_PEER_PORT), [])
   assertEquals(derive(['10.0.0.0/24', 'not-an-address']).rules, [])
-  const [exposure] = tunnelPeerExposures(['10.0.0.5/24', '10.0.0.6'])
+  const [exposure] = tunnelPeerExposures(['10.0.0.5/24', '10.0.0.6'], TUNNEL_PEER_PORT)
   assertEquals(exposure?.sources, ['10.0.0.6'])
 })
 
@@ -59,18 +60,18 @@ test('too many peers: the rule is left out with a note, never cut short or widen
   assert(derivation.notes.some((note) => note.includes(TUNNEL_PEER_COMMENT)))
 })
 
-test('only 443/tcp is ever opened: no 80, no 443/udp, no wider source', () => {
+test('only the peer port is ever opened: no 80, no 443, no 443/udp, no wider source', () => {
   const { rules } = derive(['10.0.0.10'])
   assertEquals(
     rules.map((r) => [r.proto, r.ports]),
-    [['tcp', '443']]
+    [['tcp', String(TUNNEL_PEER_PORT)]]
   )
   assert(!rules.some((r) => r.sources.includes('any') || r.sources.includes('10.0.0.0/24')))
 })
 
 test('the exposure copies its addresses', () => {
   const peers = ['10.0.0.10']
-  const [exposure] = tunnelPeerExposures(peers)
+  const [exposure] = tunnelPeerExposures(peers, TUNNEL_PEER_PORT)
   peers.push('10.0.0.99')
   assertEquals(exposure?.sources, ['10.0.0.10'])
 })

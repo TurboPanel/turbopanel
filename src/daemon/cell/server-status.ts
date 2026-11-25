@@ -19,7 +19,7 @@ import type {
   ServerHostResources,
 } from '../../features/servers/server-metadata.ts'
 import {
-  resolveServerOsForRead,
+  osMetadataFromColumns,
   parseServerHostResources,
   parseServerDockerMetadata,
   parseServerHardwareProfile,
@@ -61,6 +61,8 @@ export type ServerFleetPresence = {
     channel?: string
     version?: string
   }
+  /** The wire features the daemon's last hello listed; `undefined` when none are stored. */
+  features?: string[]
   geo: ServerGeo | null
   /** From `server.os_*` columns (daemon hello). */
   os: ServerOsMetadata | null
@@ -191,17 +193,14 @@ export async function resolveFleetPresence(
     const metadata = (row.metadata ?? {}) as ServerMetadata
     const resources = parseServerHostResources(metadata.resources) ?? null
     const os =
-      resolveServerOsForRead(
-        {
-          osId: row.osId ?? null,
-          osFamily: row.osFamily ?? null,
-          osVersion: row.osVersion ?? null,
-          osCodename: row.osCodename ?? null,
-          osPrettyName: row.osPrettyName ?? null,
-          osArchitecture: row.osArchitecture ?? null,
-        },
-        metadata
-      ) ?? null
+      osMetadataFromColumns({
+        osId: row.osId ?? null,
+        osFamily: row.osFamily ?? null,
+        osVersion: row.osVersion ?? null,
+        osCodename: row.osCodename ?? null,
+        osPrettyName: row.osPrettyName ?? null,
+        osArchitecture: row.osArchitecture ?? null,
+      }) ?? null
     const timeSync =
       timeSyncFromColumns({
         timezone: row.timezone ?? null,
@@ -235,6 +234,7 @@ export async function resolveFleetPresence(
       lastInboundAt,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
+      features: projection?.features,
       geo: parseServerGeo(metadata.geo),
       os,
       resources,

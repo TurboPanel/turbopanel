@@ -29,11 +29,7 @@
 
 import { encodeStripeForm, type StripeFormValue } from './form-encode.ts'
 import type { BillingConfig } from './config.ts'
-import {
-  StripeApiError,
-  stripeErrorFromResponse,
-  stripeTransportError,
-} from './errors.ts'
+import { StripeApiError, stripeErrorFromResponse, stripeTransportError } from './errors.ts'
 
 export const STRIPE_API_BASE_URL = 'https://api.stripe.com'
 /** Per-request ceiling. Stripe's own p99 is well under this. */
@@ -63,13 +59,13 @@ export type StripeClient = {
   post<T = Record<string, unknown>>(
     path: string,
     body?: StripeFormParams,
-    opts?: StripeMutationOpts,
+    opts?: StripeMutationOpts
   ): Promise<T>
   del<T = Record<string, unknown>>(path: string, opts?: StripeMutationOpts): Promise<T>
   listAll<T = Record<string, unknown>>(
     path: string,
     query?: StripeFormParams,
-    opts?: { maxPages?: number },
+    opts?: { maxPages?: number }
   ): Promise<T[]>
 }
 
@@ -93,7 +89,7 @@ function idOf(item: unknown): string | null {
 
 export function createStripeClient(
   config: BillingConfig,
-  opts: StripeClientOpts = {},
+  opts: StripeClientOpts = {}
 ): StripeClient {
   const baseUrl = (opts.baseUrl ?? STRIPE_API_BASE_URL).replace(/\/$/, '')
   const timeoutMs = opts.timeoutMs ?? STRIPE_REQUEST_TIMEOUT_MS
@@ -102,7 +98,7 @@ export function createStripeClient(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     params: StripeFormParams | undefined,
-    idempotencyKey: string | null,
+    idempotencyKey: string | null
   ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.secretKey}`,
@@ -159,7 +155,7 @@ export function createStripeClient(
     async listAll<T>(
       path: string,
       query: StripeFormParams = {},
-      listOpts: { maxPages?: number } = {},
+      listOpts: { maxPages?: number } = {}
     ): Promise<T[]> {
       const maxPages = listOpts.maxPages ?? STRIPE_LIST_MAX_PAGES
       const out: T[] = []

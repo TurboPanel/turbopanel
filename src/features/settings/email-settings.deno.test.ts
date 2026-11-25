@@ -3,6 +3,7 @@ import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
   isEmailActive,
+  invalidEmailSettingUpdate,
   isEmailActiveForRuntime,
   resolveEmailSettings,
   resolveMailgunApiBase,
@@ -67,19 +68,19 @@ test('emailUpdatesRequireEncryption detects secret writes only', () => {
     emailUpdatesRequireEncryption({
       TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
     }),
-    false,
+    false
   )
   assertEquals(
     emailUpdatesRequireEncryption({
       SMTP_PASS: 'secret',
     }),
-    true,
+    true
   )
   assertEquals(
     emailUpdatesRequireEncryption({
       TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: '   ',
     }),
-    false,
+    false
   )
 })
 
@@ -95,4 +96,48 @@ test('emailSettingsToApiShape masks env and db secrets', async () => {
     value: null,
   })
   assertEquals(envApi.TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN?.value, 'mg.example.com')
+})
+
+test('SMTP_SECURITY defaults to auto, reads the env override and never reaches the Mailpit config', async () => {
+  const smtp = {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: 'mail.example.com',
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '465',
+  }
+  const dflt = await resolveEmailSettings(undefined, smtp)
+  assertEquals(dflt.keys.SMTP_SECURITY.value, 'auto')
+  assertEquals(dflt.smtp?.security, 'auto')
+
+  const env = await resolveEmailSettings(undefined, {
+    ...smtp,
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'STARTTLS',
+  })
+  assertEquals(env.smtp?.security, 'starttls')
+  assertEquals(env.keys.SMTP_SECURITY.isEnvOverridden, true)
+
+  const bad = await resolveEmailSettings(undefined, {
+    ...smtp,
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'plaintext',
+  })
+  assertEquals(bad.smtp?.security, 'auto')
+
+  const mailpit = await resolveEmailSettings(undefined, {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'tls',
+  })
+  assertEquals(mailpit.smtp?.security, 'none')
+})
+
+test('invalidEmailSettingUpdate refuses an unknown SMTP_SECURITY and leaves other updates alone', () => {
+  assertEquals(invalidEmailSettingUpdate({ SMTP_SECURITY: 'starttls' }), undefined)
+  assertEquals(
+    invalidEmailSettingUpdate({ TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'None' }),
+    undefined
+  )
+  assertEquals(invalidEmailSettingUpdate({ SMTP_SECURITY: null }), undefined)
+  assertEquals(invalidEmailSettingUpdate({ PROVIDER: 'nonsense' }), undefined)
+  assertEquals(
+    invalidEmailSettingUpdate({ smtp_security: 'ssl' }),
+    'SMTP_SECURITY must be one of: auto, tls, starttls, none'
+  )
 })

@@ -49,10 +49,6 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
-import { platformControlPlaneOrigin } from '../../features/install/control-plane-origins.ts'
-import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
-import { sweepStalledFencing } from '../../features/managed/ha-recovery.ts'
-import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
   DB_OP_TIMEOUT_MS,
@@ -80,9 +76,18 @@ import { peerLeafDelivery } from '../../features/tunnels/sync.ts'
 import { runTunnelSweeps } from '../../features/tunnels/sweeps.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
-import { cachedForEnv } from './notification-email-cache.ts'
+import {
+  ALL_GATES_OPEN,
+  CRON_CADENCES,
+  type CronGates,
+  loadCronGates,
+  isDue,
+  type CronCadenceTable,
+} from './cron-gates.ts'
+import { type JobDueInput, type JobIdOn, jobDue, RUNTIME_DIFFERENCES } from '../../jobs/table.ts'
+import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
-import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
@@ -96,48 +101,13 @@ import { sweepPinSilence } from '../pin-silence.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import {
-  COMMAND_DISPATCH_SWEEP_LIMIT,
-  sweepExpiredCommandDispatch,
-} from '../../features/commands/command-records.ts'
-import {
-  releaseStuckManagedApplying,
-  sweepStaleCommands,
-} from '../../features/commands/stale-sweep.ts'
-import {
-  sweepExpiredWebhookDeliveries,
-  WEBHOOK_DELIVERY_SWEEP_LIMIT,
-} from '../../features/webhook-delivery/webhook-delivery-records.ts'
-import {
-  parseUpgradeStepRetentionDays,
-  pruneUpgradeHistory,
-} from '../../features/upgrades/prune.ts'
-import { pruneAuditHistory } from '../../features/audit/prune.ts'
-import { pruneCommandHistory } from '../../features/commands/prune.ts'
-import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
-import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
-import { INSTANCE_VERSION } from '../../app/version.ts'
-import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
-import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
-import {
-  parseUpgradeTickMinutes,
-  shouldRunUpgradeTick,
-  UPGRADE_TICK_DEFAULT_MINUTES,
-} from '../../features/upgrades/tick-cadence.ts'
-import {
-  type AnalyticsEngineDatasetLike,
-  resolveServerMetricsStore,
-} from '../metrics/store-selection-workers.ts'
-import { setServerStatusEventSink } from '../metrics/status-events.ts'
+import { parseUpgradeStepRetentionDays } from '../../features/upgrades/prune.ts'
+import { resolveJobCadencesFromEnv } from '../../features/settings/job-cadences.ts'
 import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
   resolveExecutionLogStore,
 } from '../../features/execution-logs/store-selection.ts'
-import {
-  EXECUTION_LOG_SWEEP_LIMIT,
-  type ExecutionLogStore,
-} from '../../features/execution-logs/types.ts'
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import {
   onDaemonConnected,
@@ -160,17 +130,48 @@ import {
   queryRecentlyActiveServerIds,
 } from '../metrics/backends/cloudflare/sql-api.ts'
 import { endOfflineSweep, tryBeginOfflineSweep } from './offline-sweep-lease.ts'
-import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
-import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
-import { prunePeaks } from '../../features/servers/peak.ts'
-import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
 import { resolveBillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient } from '../../features/billing/client.ts'
 import { runReconcile, shouldRunReconcile } from '../../features/billing/reconcile.ts'
 import { runPendingStripeProjections } from '../../webhook/billing/stripe-projection.ts'
+import { runIsolatedSweep, sweepErrorMessage, sweepTrace } from './offline-sweep-trace.ts'
+import { sweepTierNoticesPhase, workersNotificationEmail } from './offline-sweep-email.ts'
+import {
+  runUpgradeMaintenanceSafely,
+  sweepAuditHistorySafely,
+  sweepCommandHistorySafely,
+  sweepDaemonTrustSafely,
+  sweepExpiredCommandDispatchSafely,
+  sweepExpiredExecutionLogsSafely,
+  sweepExpiredWebhookDeliveriesSafely,
+  sweepPeakHistorySafely,
+  sweepUpgradeHistorySafely,
+} from './offline-sweep-retention.ts'
 
-/** Grace beyond the daemon's ~60s idle-ping cadence before declaring a server stale. */
-export const OFFLINE_SWEEP_STALE_MS = 90_000
+// Moved to sibling modules; re-exported so existing importers keep working.
+export { runIsolatedSweep, sweepErrorMessage } from './offline-sweep-trace.ts'
+export {
+  runUpgradeMaintenanceSafely,
+  sweepAuditHistorySafely,
+  sweepCommandHistorySafely,
+  sweepDaemonTrustSafely,
+  sweepExpiredCommandDispatchSafely,
+  sweepExpiredExecutionLogsSafely,
+  sweepExpiredWebhookDeliveriesSafely,
+  sweepPeakHistorySafely,
+  sweepUpgradeHistorySafely,
+} from './offline-sweep-retention.ts'
+
+/**
+ * Grace beyond the daemon's ~60s idle-ping cadence before declaring a server
+ * stale on Workers. Self-hosted uses the longer `DAEMON_OFFLINE_SWEEP_MS`
+ * (150 s) instead: the Redis cell coalesces `lastInboundAt` writes
+ * (`redis/cell.ts`), so a live socket can show an inbound time that old. Here
+ * the value comes from the Durable Object's own auto-response timestamp, which
+ * is not coalesced, so 90 s is enough and raising it would only delay
+ * disconnect notices and the HA host-loss `sweep_stale` marks.
+ */
+export const OFFLINE_SWEEP_STALE_MS = RUNTIME_DIFFERENCES.offlineCutoffMs.workers
 
 /** Stay comfortably under the Workers-paid subrequest ceiling (1000/invocation). */
 export const MAX_SWEEP_FANOUT = 900
@@ -201,12 +202,6 @@ export { ALERT_DELIVERY_BUDGET_MS } from '../../features/alerts/notify-demotions
 /** Hard deadline per `checkLiveness` DO RPC. */
 export const LIVENESS_RPC_TIMEOUT_MS = 5_000
 
-/** Execution-log R2 retention runs on this minute-modulo divisor. */
-export const EXECUTION_LOG_SWEEP_MINUTE_DIVISOR = 15
-
-/** Hosted license-tier nag — hourly on the same cron tick. */
-export const TIER_NOTICE_SWEEP_MINUTE_DIVISOR = 60
-
 export type SweepOnceStats = {
   probed: number
   stale: number
@@ -228,49 +223,6 @@ export function takeLastOfflineSweepScheduledTimeForTests(): number | undefined 
   return value
 }
 
-/** True on every Nth UTC minute (isolate-independent, no stored state). */
-export function shouldSweepExecutionLogs(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % EXECUTION_LOG_SWEEP_MINUTE_DIVISOR === 0
-}
-
-/** Upgrade-history prune shares the execution-log 15-minute window. */
-export const UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR = EXECUTION_LOG_SWEEP_MINUTE_DIVISOR
-
-export function shouldSweepUpgradeHistory(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR === 0
-}
-
-export function shouldSweepTierNotices(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % TIER_NOTICE_SWEEP_MINUTE_DIVISOR === 0
-}
-
-/** Format a trace field without relying on Object's default `[object Object]`. */
-function formatSweepTraceValue(value: unknown): string {
-  switch (typeof value) {
-    case 'string':
-      return value
-    case 'number':
-    case 'boolean':
-    case 'bigint':
-      return String(value)
-    default:
-      return JSON.stringify(value)
-  }
-}
-
-function sweepTrace(event: string, detail: Record<string, unknown> = {}): void {
-  const parts = [`offline-sweep event=${event}`]
-  for (const key of Object.keys(detail).sort((a, b) => a.localeCompare(b))) {
-    const value = detail[key]
-    if (value === undefined || value === null) continue
-    parts.push(`${key}=${formatSweepTraceValue(value)}`)
-  }
-  console.info(parts.join(' '))
-}
-
 // The predicate and the two message strings live in ./mass-disconnect.ts:
 // the self-hosted Deno sweep needs them too, and it cannot import this
 // Workers-typed module to get them. Re-exported so existing importers of
@@ -281,8 +233,6 @@ export {
   MASS_DISCONNECT_MIN_SERVERS,
   MASS_DISCONNECT_RATIO,
 } from './mass-disconnect.ts'
-import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
-import { closeSocketsWithStaleKeys } from './stale-key-sweep.ts'
 
 async function withBoundedConcurrency<T>(
   items: T[],
@@ -873,35 +823,6 @@ type CronTlsRenewal = {
   dataEncryptionSecrets: DerivedSecretsConfig
 }
 
-/**
- * The error text for a sweep trace. A failed query wraps the database's own
- * error in `cause` and only says "Failed query: <sql>", so the cause is added.
- */
-export function sweepErrorMessage(err: unknown): string {
-  if (!(err instanceof Error)) return String(err)
-  const cause = err.cause instanceof Error ? err.cause.message : undefined
-  return cause && cause !== err.message ? `${err.message} (cause: ${cause})` : err.message
-}
-
-/**
- * Run one isolated sweep inside the queued reconcile phase. A failure is traced
- * and never stops the others. Once the phase is out of budget (`signal`
- * aborted) no further sweep starts: the tick is about to close its database
- * connection, so a sweep started now could only fail.
- */
-export async function runIsolatedSweep(
-  signal: AbortSignal | undefined,
-  failureEvent: string,
-  sweep: () => Promise<unknown>
-): Promise<void> {
-  if (signal?.aborted) return
-  try {
-    await sweep()
-  } catch (err) {
-    sweepTrace(failureEvent, { error: sweepErrorMessage(err) })
-  }
-}
-
 async function sweepOnceSafely(
   env: CloudflareBindings,
   db: Db,
@@ -916,225 +837,6 @@ async function sweepOnceSafely(
 }
 
 /**
- * Delete `dispatch` payloads whose failure-retention window elapsed.
- * Reuses this cron's already-open db; isolated so a failure here never aborts
- * the other sweeps.
- */
-export async function sweepExpiredCommandDispatchSafely(
-  db: Db,
-  opts?: { commandQueue?: CommandQueue }
-): Promise<void> {
-  try {
-    const deleted = await sweepExpiredCommandDispatch(db, {
-      limit: COMMAND_DISPATCH_SWEEP_LIMIT,
-    })
-    if (deleted > 0) {
-      sweepTrace('command-dispatch-swept', { deleted })
-    }
-  } catch (err) {
-    sweepTrace('command-dispatch-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-  // Recover commands stranded non-terminal by a mid-run restart (the
-  // consumer's timeout lives only in memory), then unwedge managed rows
-  // stuck at 'applying' with no live command left. Same isolation: a
-  // failure here never aborts the other sweeps.
-  try {
-    const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
-    // A fence step that never answered ends its recovery at the deadline.
-    await sweepStalledFencing(db, { commandQueue: opts?.commandQueue })
-    // Recoveries first: a row still in flight keeps its managed row at
-    // `applying`, and an expired one releases it itself.
-    const expiredDetecting = await expireStaleRecoveries(db, {
-      reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
-    })
-    const released = await releaseStuckManagedApplying(db)
-    if (timedOut > 0 || released.length > 0 || expiredDetecting.length > 0) {
-      sweepTrace('stale-command-swept', {
-        timedOut,
-        releasedManaged: released.length,
-        expiredDetectingRecoveries: expiredDetecting.length,
-      })
-    }
-  } catch (err) {
-    sweepTrace('stale-command-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Drop webhook delivery ids past their replay-protection retention window.
- * Rides this cron's already-open db and is isolated the same way, so a failure
- * here never aborts the other sweeps.
- */
-export async function sweepExpiredWebhookDeliveriesSafely(db: Db): Promise<void> {
-  try {
-    const deleted = await sweepExpiredWebhookDeliveries(db, {
-      limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
-    })
-    if (deleted > 0) {
-      sweepTrace('webhook-deliveries-swept', { deleted })
-    }
-  } catch (err) {
-    sweepTrace('webhook-delivery-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Drop used sign-in challenges past their window, then close hosted sockets
- * whose daemon key was revoked or replaced (one read; a cell is reached only
- * for a row it returns). Each half is isolated.
- */
-export async function sweepDaemonTrustSafely(db: Db, registry: DaemonCellRegistry): Promise<void> {
-  try {
-    const pruned = await pruneExpiredNonces(db)
-    if (pruned > 0) sweepTrace('daemon-nonces-swept', { pruned })
-  } catch (err) {
-    sweepTrace('daemon-nonce-sweep-failed', { error: sweepErrorMessage(err) })
-  }
-  try {
-    const closed = await closeSocketsWithStaleKeys(db, registry)
-    if (closed > 0) sweepTrace('stale-key-sockets-closed', { closed })
-  } catch (err) {
-    sweepTrace('stale-key-sweep-failed', { error: sweepErrorMessage(err) })
-  }
-}
-
-/**
- * Prune aged upgrade steps and terminal runs. Rides this cron's already-open
- * db on the 15-minute window and is isolated so a failure never aborts the
- * other sweeps.
- */
-export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: number): Promise<void> {
-  try {
-    const counts = await pruneUpgradeHistory(db, { doneRetentionDays })
-    if (counts.doneSteps > 0 || counts.failedSteps > 0 || counts.runs > 0) {
-      sweepTrace('upgrade-history-swept', counts)
-    }
-  } catch (err) {
-    sweepTrace('upgrade-history-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Retention prune of audit rows older than the instance's window (see
- * features/audit/prune.ts). Same 15-minute window and the same isolation.
- */
-export async function sweepAuditHistorySafely(db: Db): Promise<void> {
-  try {
-    const months = await getAuditRetentionMonths(db)
-    const deleted = await pruneAuditHistory(db, { months })
-    if (deleted > 0) {
-      sweepTrace('audit-history-swept', { deleted })
-    }
-  } catch (err) {
-    sweepTrace('audit-history-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Retention prune of `peak` buckets older than the 7-day grace window (see
- * features/servers/peak.ts). Same 15-minute window and the same isolation.
- */
-export async function sweepPeakHistorySafely(db: Db): Promise<void> {
-  try {
-    const deleted = await prunePeaks(db)
-    if (deleted > 0) {
-      sweepTrace('peak-history-swept', { deleted })
-    }
-  } catch (err) {
-    sweepTrace('peak-history-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
- * Rides the same 15-minute window and is isolated so a failure never aborts the
- * other sweeps.
- */
-export async function sweepCommandHistorySafely(db: Db): Promise<void> {
-  try {
-    const deleted = await pruneCommandHistory(db)
-    if (deleted > 0) {
-      sweepTrace('command-history-swept', { deleted })
-    }
-  } catch (err) {
-    sweepTrace('command-history-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
- * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
- * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
- * The check for a new build (and an automatic start) runs on the first tick at
- * or after this install's minute of the hour (`schedule.ts`), so once an hour.
- * Manifest fetches are cached. Dispatch is capped inside the coordinator.
- */
-export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBindings): Promise<void> {
-  try {
-    const registry = createDurableObjectDaemonCellRegistry(env, db)
-    const envRecord = env as unknown as Record<string, string | undefined>
-    const revision = resolveInstanceRevision(envRecord)
-    const colocated = await resolveColocatedServerId(db, registry)
-    await runUpgradeMaintenance({
-      db,
-      registry,
-      runtime: 'workers',
-      resolveManifests: true,
-      env: envRecord,
-      instanceInstalled: {
-        version: INSTANCE_VERSION,
-        commit: revision.commit,
-      },
-      buildLabel: resolveBuildLabel(envRecord),
-      colocatedServerId: colocated,
-    })
-    sweepTrace('upgrade-tick')
-  } catch (err) {
-    sweepTrace('upgrade-tick-failed', { error: sweepErrorMessage(err) })
-  }
-}
-
-/**
- * Delete command transcripts past their retention window. Rides this cron's
- * existing tick (no new timer, no new connection) and is isolated so a storage
- * failure never aborts the other sweeps.
- *
- * `retentionDays` comes from the Workers env (see `runOfflineSweep`) so hosted
- * deployments can override the 30-day default the same way the Deno path does.
- */
-export async function sweepExpiredExecutionLogsSafely(
-  store: ExecutionLogStore,
-  retentionDays: number
-): Promise<void> {
-  try {
-    const deleted = await store.sweepExpired({
-      retentionDays,
-      limit: EXECUTION_LOG_SWEEP_LIMIT,
-    })
-    if (deleted > 0) {
-      sweepTrace('execution-logs-swept', { deleted, retentionDays })
-    }
-  } catch (err) {
-    sweepTrace('execution-logs-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
-}
-
-/**
  * P1-5: Run host-loss and return-fence early, with their own budget and retry guards.
  * Moved before optional phases to ensure they run even if earlier phases exhaust the budget.
  * Inside the tick the host-loss sweep runs first, then the return fence.
@@ -1142,9 +844,10 @@ export async function sweepExpiredExecutionLogsSafely(
 async function runHostLossAndReturnFenceFirst(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']> | undefined,
-  env: CloudflareBindings
+  env: CloudflareBindings,
+  jobDueNow: JobDueNow
 ): Promise<void> {
-  if (!queue) return
+  if (!queue || !jobDueNow('host-loss')) return
   const commandQueue = createWorkersCommandQueue(queue)
   try {
     // Host-loss runs first, then the return fence (see runHostLossTick).
@@ -1158,22 +861,70 @@ async function runHostLossAndReturnFenceFirst(
   }
 }
 
-async function runQueuedCronSweeps(
-  db: Db,
-  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
-  tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate,
-  registry: DaemonCellRegistry,
-  env: CloudflareBindings,
+/** What the queued cron sweeps read: the tick's connections, gates and clock. */
+type QueuedCronSweepContext = {
+  db: Db
+  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>
+  tlsRenewal: CronTlsRenewal | null | undefined
+  firewallApplyGate: FirewallApplyGate
+  registry: DaemonCellRegistry
+  env: CloudflareBindings
   signal?: AbortSignal
-): Promise<void> {
+  gates?: CronGates
+  scheduledTime?: number
+  /** The tick's resolved cadences; the defaults when omitted. */
+  cadences?: CronCadenceTable
+}
+
+async function runQueuedCronSweeps(ctx: QueuedCronSweepContext): Promise<void> {
+  const { db, registry, signal, tlsRenewal } = ctx
+  const jobDueNow = jobDueNowFor({
+    gates: ctx.gates ?? ALL_GATES_OPEN,
+    scheduledTime: ctx.scheduledTime,
+    cadences: ctx.cadences ?? CRON_CADENCES,
+    queue: true,
+    secrets: tlsRenewal != null,
+  })
   try {
-    const commandQueue = createWorkersCommandQueue(queue)
+    const commandQueue = createWorkersCommandQueue(ctx.queue)
     // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
     // so it is not called here anymore.
-    await runSystemReconcileSweep(db, commandQueue)
-    // Each sweep below is isolated: a failure never aborts the others.
-    // Backup policy sets after a reconnect.
+    await runReconnectRepairSweeps(ctx, jobDueNow, commandQueue)
+    await runHostingLetsEncryptStep(ctx, jobDueNow, commandQueue)
+    if (tlsRenewal) await runCertificateAndIngressSweeps(ctx, jobDueNow, commandQueue, tlsRenewal)
+    // Automatic network fallback: ask the servers whether the network that
+    // carries server-to-server traffic still works, and mark the ones nobody
+    // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
+    // drains it on a later tick.
+    if (jobDueNow('network-probe-sweep'))
+      await runIsolatedSweep(signal, 'network-probe-sweep-failed', () =>
+        runNetworkProbeSweep(db, registry)
+      )
+  } catch (err) {
+    sweepTrace('system-reconcile-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
+ * Reconnect-repair sweeps: each has its own five minute throttle or works on
+ * expiry-scale dates, so they run on a staggered five minute catch-up, and
+ * only while a server is connected (nothing can be sent to one that is not).
+ */
+async function runReconnectRepairSweeps(
+  ctx: QueuedCronSweepContext,
+  jobDueNow: JobDueNow,
+  commandQueue: CommandQueue
+): Promise<void> {
+  const { db, signal, tlsRenewal, firewallApplyGate } = ctx
+  // System reconcile keeps a 5 minute throttle on its own last command, so the
+  // shared rule (`jobs/table.ts`) runs it every minute while the gate shows a
+  // candidate and otherwise on its slot.
+  if (jobDueNow('system-reconcile')) await runSystemReconcileSweep(db, commandQueue)
+  // Each sweep below is isolated: a failure never aborts the others.
+  // Backup policy sets after a reconnect.
+  if (jobDueNow('backups-reconcile-sweep'))
     await runIsolatedSweep(signal, 'backups-reconcile-sweep-failed', () =>
       runBackupsReconcileSweep(db, commandQueue, {
         copyDeps: tlsRenewal
@@ -1184,97 +935,121 @@ async function runQueuedCronSweeps(
           : undefined,
       })
     )
-    // Folders of deleted assets the host has not confirmed gone.
+  // Folders of deleted assets the host has not confirmed gone.
+  if (jobDueNow('folder-removal-sweep'))
     await runIsolatedSweep(signal, 'folder-removal-sweep-failed', () =>
       runFolderRemovalSweep(db, commandQueue)
     )
-    // Hosting Accounts of deleted projects whose folders are gone.
+  // Hosting Accounts of deleted projects whose folders are gone.
+  if (jobDueNow('principal-removal-sweep'))
     await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
       runPrincipalRemovalSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
-    // A fresh folder listing from servers that have folders, every few hours, so
-    // a folder removed or added by hand is noticed.
+  // A fresh folder listing from servers that have folders, every few hours, so
+  // a folder removed or added by hand is noticed.
+  if (jobDueNow('folder-reconcile-sweep'))
     await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
       runFolderReconcileSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
-    // Firewall previews after a reconnect. The gate is the deploy-time apply
-    // key: without it an opted-in host that applied would be sent a teardown on
-    // every reconnect.
+  // Firewall previews after a reconnect. The gate is the deploy-time apply
+  // key: without it an opted-in host that applied would be sent a teardown on
+  // every reconnect.
+  if (jobDueNow('firewall-preview-sweep'))
     await runIsolatedSweep(signal, 'firewall-preview-sweep-failed', () =>
       runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
     )
-    // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
-    // pinned certificate goes out at once; without it the panel asks for a redeploy.
-    await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
-      runHostingLetsEncryptSweepTick(db, {
-        ...(signal ? { signal } : {}),
-        ...(tlsRenewal
-          ? {
-              apply: {
-                commandQueue,
-                secretsConfig: tlsRenewal.secretsConfig,
-                dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
-              },
-            }
-          : {}),
+}
+
+/**
+ * Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
+ * pinned certificate goes out at once; without it the panel asks for a redeploy.
+ */
+async function runHostingLetsEncryptStep(
+  ctx: QueuedCronSweepContext,
+  jobDueNow: JobDueNow,
+  commandQueue: CommandQueue
+): Promise<void> {
+  const { db, signal, tlsRenewal } = ctx
+  if (!jobDueNow('hosting-certificate-sweep')) return
+  await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
+    runHostingLetsEncryptSweepTick(db, {
+      ...(signal ? { signal } : {}),
+      ...(tlsRenewal
+        ? {
+            apply: {
+              commandQueue,
+              secretsConfig: tlsRenewal.secretsConfig,
+              dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+            },
+          }
+        : {}),
+    })
+  )
+}
+
+/** Certificate, tunnel and ingress sweeps that need the secrets bundle. */
+async function runCertificateAndIngressSweeps(
+  ctx: QueuedCronSweepContext,
+  jobDueNow: JobDueNow,
+  commandQueue: CommandQueue,
+  tlsRenewal: CronTlsRenewal
+): Promise<void> {
+  const { db, signal, registry, env } = ctx
+  // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
+  // bounded batch; reset when the sweep completes or the cursor is invalid).
+  if (jobDueNow('leaf-renewal'))
+    await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
+      runLeafRenewalSweepTick(db, commandQueue, {
+        ...tlsRenewal,
+        deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
       })
     )
-    if (tlsRenewal) {
-      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
-      // bounded batch; reset when the sweep completes or the cursor is invalid).
-      await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
-        runLeafRenewalSweepTick(db, commandQueue, {
-          ...tlsRenewal,
-          deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
-        })
-      )
-      // Tunnel tables, connectors, removals, token recheck and connector status:
-      // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
-      await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
-        runIsolatedSweep(signal, label, sweep)
-      )
-      // DNS-validated certificates: the control plane no longer orders or renews them.
-      // Only challenge records it made are removed, through the DNS provider.
-      await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
-        runDnsCertificateCleanupTick(
-          buildDnsCertContext(db, { secrets: tlsRenewal.dataEncryptionSecrets })
-        )
-      )
-      // Certificates a serving server orders at the panel's request: moves each open
-      // request on, hands a finished pair to the sites, starts first orders and renewals.
-      await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
-        runHttpIssuanceSweepTick(db, {
-          registry,
-          push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
-          secrets: tlsRenewal.dataEncryptionSecrets,
-          env: env as unknown as Record<string, string | undefined>,
-        })
-      )
-      // Orphaned ProxySQL frontends: teardown needs a full
-      // `managed.ingress.reconcile`, so it can only run when the cron has the
-      // secrets bundle (same gate as leaf renewal).
-      await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
-        runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
-      )
-      // Automatic membership repins: the presence path only stamps
-      // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
-      // the routing fan-out needs the same secrets bundle as leaf renewal.
-      await runIsolatedSweep(signal, 'datacenter-repin-fanout-sweep-failed', () =>
-        runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
-      )
-    }
-    // Automatic network fallback: ask the servers whether the network that
-    // carries server-to-server traffic still works, and mark the ones nobody
-    // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
-    // drains it on a later tick.
-    await runIsolatedSweep(signal, 'network-probe-sweep-failed', () =>
-      runNetworkProbeSweep(db, registry)
+  // Tunnel tables, connectors, removals, token recheck and connector status:
+  // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
+  // On its registry cadence, or at once while a removal, rotation or new portal needs it.
+  if (jobDueNow('tunnel-sweeps'))
+    await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
+      runIsolatedSweep(signal, label, sweep)
     )
-  } catch (err) {
-    sweepTrace('system-reconcile-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
-  }
+  // DNS-validated certificates: the control plane no longer orders or renews them.
+  // Only challenge records it made are removed, through the DNS provider.
+  if (jobDueNow('dns-certificate-cleanup'))
+    await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
+      runDnsCertificateCleanupTick(
+        buildDnsCertContext(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+      )
+    )
+  // Certificates a serving server orders at the panel's request: moves each open
+  // request on, hands a finished pair to the sites, starts first orders and renewals.
+  if (jobDueNow('http-certificate-issuance'))
+    await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
+      runHttpIssuanceSweepTick(db, {
+        registry,
+        push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+        secrets: tlsRenewal.dataEncryptionSecrets,
+        env: env as unknown as Record<string, string | undefined>,
+      })
+    )
+  // Orphaned ProxySQL frontends: teardown needs a full
+  // `managed.ingress.reconcile`, so it can only run when the cron has the
+  // secrets bundle (same gate as leaf renewal).
+  if (jobDueNow('managed-ingress-orphan-sweep'))
+    await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
+      runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
+    )
+  // Automatic membership repins: the presence path only stamps
+  // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
+  // the routing fan-out needs the same secrets bundle as leaf renewal.
+  if (jobDueNow('datacenter-repin-fanout-sweep'))
+    await runIsolatedSweep(signal, 'datacenter-repin-fanout-sweep-failed', () =>
+      runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
+    )
+  // An external-access change a server never confirmed is pushed again to the
+  // connected servers (the self-hosted tick runs the same sweep).
+  if (jobDueNow('managed-external-access-pending-sweep'))
+    await runIsolatedSweep(signal, 'managed-external-access-pending-sweep-failed', () =>
+      runManagedExternalAccessPendingSweep(db, commandQueue, tlsRenewal)
+    )
 }
 
 function capDbTimeout(deadlineMs: number): number {
@@ -1291,38 +1066,84 @@ function shouldRunScheduledPhase(
 }
 
 /**
- * Phases a tick did not run, plus the upgrade tick cadence in force for it
- * (`TURBOPANEL_UPGRADE_TICK_MINUTES`) so the skipped-phase list agrees with
- * what the tick would really have scheduled.
+ * Phases a tick did not run, plus the cadences in force for it
+ * (`TURBOPANEL_JOB_CADENCES`) so the skipped-phase list agrees with what the
+ * tick would really have scheduled.
  */
-export type SkippedPhases = string[] & { readonly upgradeTickMinutes: number }
+export type SkippedPhases = string[] & {
+  readonly cadences: CronCadenceTable
+  /** Set once the tick's gates are read: an active upgrade run makes the upgrade phase due. */
+  upgradeRunActive: boolean
+}
 
-export function newSkippedPhases(upgradeTickMinutes: number): SkippedPhases {
-  return Object.assign([] as string[], { upgradeTickMinutes })
+export function newSkippedPhases(cadences: CronCadenceTable = CRON_CADENCES): SkippedPhases {
+  return Object.assign([] as string[], { cadences, upgradeRunActive: false })
+}
+
+/** Whether a job of the shared table (`jobs/table.ts`) runs on this tick. */
+type JobDueNow = (id: JobIdOn<'workers'>) => boolean
+
+let jobAskObserverForTests: ((id: JobIdOn<'workers'>) => void) | undefined
+
+/** Test seam: sees every job id the cron asks the shared rule about (`null` removes it). */
+export function observeJobAsksForTests(observer: ((id: JobIdOn<'workers'>) => void) | null): void {
+  jobAskObserverForTests = observer ?? undefined
+}
+
+/** The shared rule for one tick: the Workers adapter's input to `jobDue`. */
+function jobDueNowFor(tick: {
+  gates: CronGates
+  scheduledTime: number | undefined
+  cadences: CronCadenceTable
+  queue: boolean
+  secrets: boolean
+}): JobDueNow {
+  const input: JobDueInput = {
+    gates: tick.gates,
+    cadenceDue: (job) => isDue(job, tick.scheduledTime, tick.cadences),
+    queue: tick.queue,
+    secrets: tick.secrets,
+  }
+  return (id) => {
+    jobAskObserverForTests?.(id)
+    return jobDue(id, input)
+  }
+}
+
+/** The 'upgrade-history' phase runs for the history prune, the upgrade tick, or both. */
+function upgradePhaseDue(jobDueNow: JobDueNow): boolean {
+  return jobDueNow('history-prune') || jobDueNow('upgrade-tick')
 }
 
 /** The phases this tick schedules after liveness, in run order. */
 export function optionalPhaseNames(
   scheduledTime: number | undefined,
-  upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
+  cadences: CronCadenceTable = CRON_CADENCES,
+  upgradeRunActive = false
 ): string[] {
+  const jobDueNow = jobDueNowFor({
+    gates: { ...ALL_GATES_OPEN, upgradeRunActive },
+    scheduledTime,
+    cadences,
+    queue: true,
+    secrets: true,
+  })
   const names = ['command-dispatch', 'webhook-deliveries', 'daemon-trust']
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
+  if (scheduledTime !== undefined && jobDueNow('execution-log-sweep')) {
     names.push('execution-logs')
   }
-  if (
-    shouldRunScheduledPhase(
-      scheduledTime,
-      (ms) => shouldSweepUpgradeHistory(ms) || shouldRunUpgradeTick(ms, upgradeTickMinutes)
-    )
-  ) {
+  if (scheduledTime !== undefined && upgradePhaseDue(jobDueNow)) {
     names.push('upgrade-history')
   }
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepTierNotices)) {
+  if (scheduledTime !== undefined && jobDueNow('tier-notice-sweep')) {
     names.push('tier-notices')
   }
   names.push('billing-stripe-projection')
-  if (shouldRunScheduledPhase(scheduledTime, shouldRunReconcile)) {
+  if (
+    scheduledTime !== undefined &&
+    jobDueNow('billing-reconcile') &&
+    shouldRunReconcile(scheduledTime)
+  ) {
     names.push('billing-reconcile')
   }
   names.push('reconcile')
@@ -1334,7 +1155,11 @@ function markSkippedFrom(
   phase: string,
   scheduledTime: number | undefined
 ): void {
-  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.upgradeTickMinutes)
+  const rest = optionalPhaseNames(
+    scheduledTime,
+    phasesSkipped.cadences,
+    phasesSkipped.upgradeRunActive
+  )
   const index = rest.indexOf(phase)
   phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)))
 }
@@ -1406,19 +1231,18 @@ async function runScheduledOptionalPhase(
 }
 
 /**
- * The 'upgrade-history' cron phase: history prune on its own 15-minute window
- * and the upgrade tick on `upgradeTickMinutes`; whichever is due runs.
+ * The 'upgrade-history' cron phase: history prune on the `historyPrune`
+ * cadence and the upgrade tick on `upgradeTick`; whichever is due runs.
  */
 async function upgradePhaseWork(
   db: Db,
   env: CloudflareBindings,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  upgradeTickMinutes: number
+  jobDueNow: JobDueNow
 ): Promise<void> {
-  const scheduledTime = opts.scheduledTime
-  if (scheduledTime === undefined) return
-  if (shouldSweepUpgradeHistory(scheduledTime)) {
+  if (opts.scheduledTime === undefined) return
+  if (jobDueNow('history-prune')) {
     await runWithDbTimeout(
       db,
       (database) =>
@@ -1435,7 +1259,7 @@ async function upgradePhaseWork(
     await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
     await runWithDbTimeout(db, sweepPeakHistorySafely, capDbTimeout(deadlineMs))
   }
-  if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
+  if (jobDueNow('upgrade-tick')) {
     await runUpgradeMaintenanceSafely(db, env)
   }
 }
@@ -1454,62 +1278,13 @@ async function sweepExecutionLogsPhase(
   )
 }
 
-/** The mail queue and from address a Workers tick hands the notifications pipeline. */
-function workersNotificationEmail(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined
-): Promise<EmitEmail | undefined> {
-  return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
-}
-
-async function resolveWorkersNotificationEmail(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined
-): Promise<EmitEmail | undefined> {
-  const platformEnv = env as unknown as Record<string, string | undefined>
-  try {
-    const queue = await resolveWorkersEmailQueue(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    return {
-      queue,
-      from: settings.from,
-      consoleBaseUrl: platformControlPlaneOrigin(platformEnv),
-    }
-  } catch {
-    return undefined
-  }
-}
-
-async function sweepTierNoticesPhase(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined,
-  opts: RunOfflineSweepOpts
-): Promise<void> {
-  const platformEnv = env as unknown as Record<string, string | undefined>
-  const emailQueue = await resolveWorkersEmailQueue(
-    db,
-    platformEnv,
-    tlsRenewal?.dataEncryptionSecrets
-  )
-  await sweepTierNotices({
-    db,
-    emailQueue,
-    deployment: 'hosted',
-    ignoreElapsedGate: true,
-    nowMs: opts.nowMs,
-    consoleBaseUrl: platformControlPlaneOrigin(platformEnv) ?? undefined,
-  })
-}
-
 async function runBillingOptionalPhases(
   env: CloudflareBindings,
   db: Db,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: SkippedPhases
+  phasesSkipped: SkippedPhases,
+  jobDueNow: JobDueNow
 ): Promise<boolean> {
   // Billing phases: skipped wholesale when the instance has no Stripe key
   // (`resolveBillingConfig` is the switch). They run in sequence through
@@ -1517,7 +1292,7 @@ async function runBillingOptionalPhases(
   // phases after it for that tick (they catch up on the next one). Kept
   // that way by decision on 2026-09-08; see the v6 ledger.
   const billingConfig = resolveBillingConfig(env as unknown as Record<string, string | undefined>)
-  if (!billingConfig) return true
+  if (!billingConfig || !jobDueNow('billing-stripe-projection')) return true
 
   if (
     !(await runOptionalPhase(
@@ -1543,73 +1318,80 @@ async function runBillingOptionalPhases(
     'billing-reconcile',
     opts.scheduledTime,
     phasesSkipped,
-    shouldRunReconcile,
+    (ms) => jobDueNow('billing-reconcile') && shouldRunReconcile(ms),
     async () => {
       await runReconcile({ db, nowMs: opts.nowMs })
     }
   )
 }
 
-async function runOptionalCronPhases(
+/** Retention, webhook, trust, pin-silence and orphan-alert phases; false when the deadline cut the tick short. */
+async function runMaintenanceCronPhases(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal: CronTlsRenewal | null | undefined,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: SkippedPhases
-): Promise<void> {
-  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
+  phasesSkipped: SkippedPhases,
+  jobDueNow: JobDueNow
+): Promise<boolean> {
+  const scheduledTime = opts.scheduledTime
+  // Two halves: the retention delete (a cadence) and the stale-command and
+  // stuck-recovery pass (only while a command, recovery or managed row is open).
+  const dispatchRetention = jobDueNow('command-dispatch-sweep')
+  const dispatchRecovery = jobDueNow('stale-command-sweep')
   if (
-    !(await runOptionalPhase(
-      deadlineMs,
-      'command-dispatch',
-      opts.scheduledTime,
-      phasesSkipped,
-      () =>
-        runWithDbTimeout(
-          db,
-          () =>
-            sweepExpiredCommandDispatchSafely(db, {
-              commandQueue: env.TURBOPANEL_COMMAND_QUEUE
-                ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
-                : undefined,
-            }),
-          capDbTimeout(deadlineMs)
-        )
-    ))
-  ) {
-    return
-  }
-
-  if (
-    !(await runOptionalPhase(
-      deadlineMs,
-      'webhook-deliveries',
-      opts.scheduledTime,
-      phasesSkipped,
-      () => runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
-    ))
-  ) {
-    return
-  }
-
-  if (
-    !(await runOptionalPhase(deadlineMs, 'daemon-trust', opts.scheduledTime, phasesSkipped, () =>
+    (dispatchRetention || dispatchRecovery) &&
+    !(await runOptionalPhase(deadlineMs, 'command-dispatch', scheduledTime, phasesSkipped, () =>
       runWithDbTimeout(
         db,
-        (database) =>
-          sweepDaemonTrustSafely(database, createDurableObjectDaemonCellRegistry(env, database)),
+        () =>
+          sweepExpiredCommandDispatchSafely(db, {
+            retention: dispatchRetention,
+            recovery: dispatchRecovery,
+            commandQueue: env.TURBOPANEL_COMMAND_QUEUE
+              ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
+              : undefined,
+          }),
         capDbTimeout(deadlineMs)
       )
     ))
   ) {
-    return
+    return false
+  }
+
+  if (
+    jobDueNow('webhook-delivery-sweep') &&
+    !(await runOptionalPhase(deadlineMs, 'webhook-deliveries', scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
+    ))
+  ) {
+    return false
+  }
+
+  // The stale-key socket close stays every minute (one read, a cell is woken
+  // only for a row it returns); the nonce prune rides its cadence.
+  if (
+    jobDueNow('stale-key-socket-close') &&
+    !(await runOptionalPhase(deadlineMs, 'daemon-trust', scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(
+        db,
+        (database) =>
+          sweepDaemonTrustSafely(database, createDurableObjectDaemonCellRegistry(env, database), {
+            nonces: jobDueNow('daemon-nonce-sweep'),
+          }),
+        capDbTimeout(deadlineMs)
+      )
+    ))
+  ) {
+    return false
   }
 
   // Pinned servers that are up (a TurboFabric peer still reaches them) but
   // not talking to us: staged pin silence alarms (daemon/pin-silence.ts).
   // Postgres only, no cell is woken; the sweep never throws.
   if (
+    jobDueNow('pin-silence-sweep') &&
     !(await runOptionalPhase(deadlineMs, 'pin-silence', opts.scheduledTime, phasesSkipped, () =>
       runWithDbTimeout(
         db,
@@ -1622,13 +1404,14 @@ async function runOptionalCronPhases(
       )
     ))
   ) {
-    return
+    return false
   }
 
   // Tell each organization about the folders that became orphans since the
   // last tick, once per orphan (see features/notifications/folder-alerts.ts).
   // The sweep itself never throws.
   if (
+    jobDueNow('orphan-folder-alert-sweep') &&
     !(await runOptionalPhase(
       deadlineMs,
       'orphan-folder-alerts',
@@ -1641,13 +1424,26 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
+  return true
+}
 
+/** Notification retry and digest phases; false when the deadline cut the tick short. */
+async function runNotificationCronPhases(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  phasesSkipped: SkippedPhases,
+  jobDueNow: JobDueNow
+): Promise<boolean> {
   // Retry notification deliveries whose backoff has elapsed (chat/webhook
   // channels; email and push have their own transports). Bounded batch, and
   // the sweep itself never throws.
   if (
+    jobDueNow('notification-retry-sweep') &&
     !(await runOptionalPhase(
       deadlineMs,
       'notification-retries',
@@ -1661,12 +1457,13 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
 
   // Send each email channel's closed digest / quiet-hours window as one
   // summary (held deliveries; see features/notifications/digest.ts).
   if (
+    jobDueNow('notification-digest-sweep') &&
     !(await runOptionalPhase(
       deadlineMs,
       'notification-digests',
@@ -1681,20 +1478,67 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
+  return true
+}
+
+async function runOptionalCronPhases(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  phasesSkipped: SkippedPhases
+): Promise<void> {
+  const cadences = phasesSkipped.cadences
+  // One statement answers "can any gated family have work?" for the whole tick.
+  const gates = await loadGatesForTick(db, deadlineMs)
+  phasesSkipped.upgradeRunActive = gates.upgradeRunActive
+  const jobDueNow = jobDueNowFor({
+    gates,
+    scheduledTime: opts.scheduledTime,
+    cadences,
+    queue: env.TURBOPANEL_COMMAND_QUEUE != null,
+    secrets: tlsRenewal != null,
+  })
+
+  if (
+    !(await runMaintenanceCronPhases(
+      env,
+      db,
+      tlsRenewal,
+      opts,
+      deadlineMs,
+      phasesSkipped,
+      jobDueNow
+    ))
+  )
+    return
+  if (
+    !(await runNotificationCronPhases(
+      env,
+      db,
+      tlsRenewal,
+      opts,
+      deadlineMs,
+      phasesSkipped,
+      jobDueNow
+    ))
+  )
+    return
 
   // Inbox rows after 90 days, events and the ledger after 30, and settings of
   // people who left an organization (features/notifications/cleanup.ts). On
-  // the upgrade-history 15-minute window, like the self-hosted tick: the
-  // settings pass reads the whole preference table.
+  // the `notificationPrune` cadence (15 minutes by default): the settings
+  // pass reads the whole preference table.
   if (
     !(await runScheduledOptionalPhase(
       deadlineMs,
       'notification-prune',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepUpgradeHistory,
+      () => jobDueNow('notification-history-prune'),
       async () => {
         await pruneNotificationHistory(db)
       }
@@ -1709,7 +1553,7 @@ async function runOptionalCronPhases(
       'execution-logs',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepExecutionLogs,
+      () => jobDueNow('execution-log-sweep'),
       () => sweepExecutionLogsPhase(env, opts)
     ))
   ) {
@@ -1722,10 +1566,8 @@ async function runOptionalCronPhases(
       'upgrade-history',
       opts.scheduledTime,
       phasesSkipped,
-      (scheduledTimeMs) =>
-        shouldSweepUpgradeHistory(scheduledTimeMs) ||
-        shouldRunUpgradeTick(scheduledTimeMs, upgradeTickMinutes),
-      () => upgradePhaseWork(db, env, opts, deadlineMs, upgradeTickMinutes)
+      () => upgradePhaseDue(jobDueNow),
+      () => upgradePhaseWork(db, env, opts, deadlineMs, jobDueNow)
     ))
   ) {
     return
@@ -1737,30 +1579,50 @@ async function runOptionalCronPhases(
       'tier-notices',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepTierNotices,
-      () => sweepTierNoticesPhase(env, db, tlsRenewal, opts)
+      () => jobDueNow('tier-notice-sweep'),
+      () => sweepTierNoticesPhase(env, db, opts)
     ))
   ) {
     return
   }
 
-  if (!(await runBillingOptionalPhases(env, db, opts, deadlineMs, phasesSkipped))) {
+  if (!(await runBillingOptionalPhases(env, db, opts, deadlineMs, phasesSkipped, jobDueNow))) {
     return
   }
 
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, (signal) =>
-    runQueuedCronSweeps(
+    runQueuedCronSweeps({
       db,
-      commandQueue,
+      queue: commandQueue,
       tlsRenewal,
-      opts.firewallApplyGate,
-      createDurableObjectDaemonCellRegistry(env, db),
+      firewallApplyGate: opts.firewallApplyGate,
+      registry: createDurableObjectDaemonCellRegistry(env, db),
       env,
-      signal
-    )
+      signal,
+      gates,
+      scheduledTime: opts.scheduledTime,
+      cadences,
+    })
   )
+}
+
+/** The tick's gates; a gate that cannot be read opens every family. */
+async function loadGatesForTick(db: Db, deadlineMs: number): Promise<CronGates> {
+  try {
+    return await runWithDbTimeout(
+      db,
+      (gateDb) =>
+        loadCronGates(gateDb, {
+          onError: (err) => sweepTrace('gates-unreadable', { error: sweepErrorMessage(err) }),
+        }),
+      capDbTimeout(deadlineMs)
+    )
+  } catch (err) {
+    sweepTrace('gates-unreadable', { error: sweepErrorMessage(err) })
+    return ALL_GATES_OPEN
+  }
 }
 
 export type RunOfflineSweepOpts = {
@@ -1784,17 +1646,9 @@ export async function runOfflineSweep(
 ): Promise<void> {
   lastScheduledTimeForTests = opts.scheduledTime
 
-  // `workers.ts`'s `scheduled()` handler awaits `initWorkerApp` (which already
-  // registers the v6 sink) before calling this function, but re-register here
-  // unconditionally anyway — this function is also called directly in tests
-  // and must not depend on that ordering. Always the v6 store so demotions /
-  // self-heal status rows land in the same dataset the read side queries.
-  setServerStatusEventSink(
-    resolveServerMetricsStore({
-      runtime: 'workers',
-      analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike }).SERVER_METRICS,
-    })
-  )
+  // The status-event sink is registered once by `initWorkerApp` (`workers.ts`),
+  // which `scheduled()` awaits before this runs. A test that calls this directly
+  // registers its own sink.
 
   // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
   // across requests/cron invocations). Always end it — leaving postgres.js
@@ -1804,11 +1658,22 @@ export async function runOfflineSweep(
 
   const startedAtMs = opts.nowMs ?? Date.now()
   const deadlineMs = opts.deadlineMs ?? startedAtMs + OFFLINE_SWEEP_TICK_BUDGET_MS
-  const phasesSkipped = newSkippedPhases(
-    parseUpgradeTickMinutes(
-      (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
-    )
-  )
+  // Vars only: no database read, so the cadences add no Hyperdrive statement to a tick.
+  const resolved = resolveJobCadencesFromEnv(env as unknown as Record<string, string | undefined>)
+  if (resolved.warnings.length > 0) {
+    sweepTrace('job-cadences-adjusted', { warnings: resolved.warnings.join('; ') })
+  }
+  const phasesSkipped = newSkippedPhases(resolved.table)
+  // Liveness and host loss run before the gates are read. Their table rows carry
+  // no gate, so the gates here are open; a row that gains a gate must move the
+  // gate read ahead of them.
+  const earlyJobDue = jobDueNowFor({
+    gates: ALL_GATES_OPEN,
+    scheduledTime: opts.scheduledTime,
+    cadences: resolved.table,
+    queue: env.TURBOPANEL_COMMAND_QUEUE != null,
+    secrets: tlsRenewal != null,
+  })
   let stats: SweepOnceStats = { ...EMPTY_SWEEP_STATS }
 
   try {
@@ -1841,39 +1706,36 @@ export async function runOfflineSweep(
             sweepTrace,
             undefined,
             // Resolved only if an alert is actually sent this tick.
-            () => workersNotificationEmail(env, db, tlsRenewal),
-            // The legacy-webhook adoption is a one-time migration touch: the
-            // 15-minute window is plenty, not every minute.
-            {
-              adoptLegacy:
-                opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
-            }
+            () => workersNotificationEmail(env, db, tlsRenewal)
           ))
-        stats = await sweepOnceSafely(env, db, {
-          ...opts.sweepOnceDeps,
-          alertSender,
-          nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
-          deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
-        })
+        if (earlyJobDue('stale-presence')) {
+          stats = await sweepOnceSafely(env, db, {
+            ...opts.sweepOnceDeps,
+            alertSender,
+            nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
+            deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
+          })
+        }
         // After the demotions and the self-heal, so a server healed this tick
         // is not announced; an ordinary disconnect past the grace is.
-        await runIsolatedSweep(undefined, 'disconnect-notice-failed', () =>
-          noticeDisconnectedServers(db, {
-            claim: (claimDb, claimOpts) =>
-              runWithDbTimeout(claimDb, (leaseDb) => claimDisconnectNotices(leaseDb, claimOpts)),
-            graceMs: OFFLINE_SWEEP_STALE_MS,
-            nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
-            resolveSender: () => Promise.resolve(alertSender),
-            awaitDelivery: true,
-            budgetMs: Math.min(remainingMs(deadlineMs), ALERT_DELIVERY_BUDGET_MS),
-          })
-        )
+        if (earlyJobDue('disconnect-notice'))
+          await runIsolatedSweep(undefined, 'disconnect-notice-failed', () =>
+            noticeDisconnectedServers(db, {
+              claim: (claimDb, claimOpts) =>
+                runWithDbTimeout(claimDb, (leaseDb) => claimDisconnectNotices(leaseDb, claimOpts)),
+              graceMs: OFFLINE_SWEEP_STALE_MS,
+              nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
+              resolveSender: () => Promise.resolve(alertSender),
+              awaitDelivery: true,
+              budgetMs: Math.min(remainingMs(deadlineMs), ALERT_DELIVERY_BUDGET_MS),
+            })
+          )
       })
       if (!ranLiveness) {
         markSkippedFrom(phasesSkipped, 'command-dispatch', opts.scheduledTime)
       } else {
         // P1-5: Run host-loss tick first, before optional phases, with own budget and try block
-        await runHostLossAndReturnFenceFirst(db, env.TURBOPANEL_COMMAND_QUEUE, env)
+        await runHostLossAndReturnFenceFirst(db, env.TURBOPANEL_COMMAND_QUEUE, env, earlyJobDue)
         await runOptionalCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped)
       }
     } finally {

@@ -151,6 +151,7 @@ async function withCluster(
         name: 'Follow Primary DC',
         createdAt: now,
         updatedAt: now,
+        isTrusted: true,
       })
       .returning({ id: datacenter.id })
     const [net] = await db

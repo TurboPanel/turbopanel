@@ -455,8 +455,8 @@ export type TopologyIdValidationSnapshot = Pick<TopologySnapshot, 'networks' | '
 
 /**
  * Find the first assigned topology-id override in `update` that does not
- * match a device/filesystem id in `snapshot` — the last topology generation
- * this server reported (`getLatestTopologyGeneration`,
+ * match a device/filesystem id in `snapshot` — the last topology
+ * this server reported (`getLatestServerTopology`,
  * `server-topology-records.ts`). Returns `null` when every assigned id is
  * valid, or when nothing was assigned.
  */
@@ -765,7 +765,7 @@ export function seriesCacheMetricsList(selectors: SeriesMetricSelectors): string
  * here (unlike the pre-reconstruction behavior this replaces): Cloudflare
  * now reconstructs its `receiveBytesPerSecond`/`transmitBytesPerSecond` from
  * `host.io`'s own rows when `queryEntitySeries` is called with a resolved
- * `slotMapping`/`topologyGeneration` (see `types.ts`'s
+ * `slotMapping` (see `types.ts`'s
  * `EntitySeriesQuery` doc comment), and DuckDB already had the full row —
  * so both backends can answer, even though Cloudflare's answer is partial
  * (every other requested field resolves to `null` for that entity).

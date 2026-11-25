@@ -4,7 +4,8 @@
  * The daemon sends the pair for one hostname (`POST /api/daemon/v1/tls/issued`)
  * after a first sighting, a daemon restart or a renewal. Everything is checked
  * before anything is written, in this order: the pair itself (parses, covers
- * the hostname, not expired, not self-signed, the key matches), then who sent it
+ * the hostname, a plausible validity window, not self-signed and not from a
+ * known private issuer, the key matches), then who sent it
  * (the reporting server belongs to an organization that still allows Let's
  * Encrypt, and a hosting placed on that server pins the row). The key is sealed
  * with the same envelope as every other certificate key and is never returned,
@@ -18,7 +19,7 @@
 
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, hosting, server, service, tls } from '../../db/schema.ts'
+import { environment, hostname, hosting, server, service, tls } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -68,6 +69,8 @@ export type IssuedCertificateRefusal =
   | 'certificate_expired'
   | 'certificate_not_for_hostname'
   | 'self_signed_certificate'
+  | 'implausible_validity'
+  | 'private_ca_certificate'
   | 'server_not_in_organization'
   | 'acme_disabled'
   | 'no_matching_certificate'
@@ -90,6 +93,8 @@ const REFUSAL_STATUS: Record<IssuedCertificateRefusal, 400 | 403 | 404 | 409> = 
   certificate_expired: 400,
   certificate_not_for_hostname: 400,
   self_signed_certificate: 400,
+  implausible_validity: 400,
+  private_ca_certificate: 400,
   server_not_in_organization: 403,
   acme_disabled: 409,
   no_matching_certificate: 404,
@@ -108,6 +113,9 @@ export const REFUSAL_MESSAGE: Record<IssuedCertificateRefusal, string> = {
   certificate_expired: 'The certificate has already expired.',
   certificate_not_for_hostname: 'The certificate does not cover the hostname.',
   self_signed_certificate: 'The certificate is self-signed.',
+  implausible_validity:
+    'The certificate is valid for longer than a public certificate authority issues, or starts in the future.',
+  private_ca_certificate: 'The certificate was issued by a private certificate authority.',
   server_not_in_organization: 'The sending server does not belong to an organization.',
   acme_disabled: "Let's Encrypt is turned off for the organization.",
   no_matching_certificate:
@@ -195,11 +203,50 @@ async function readLeaf(
   }
 }
 
-/** Name, expiry and self-signed checks on the leaf. */
+const DAY_MS = 86_400_000
+
+/**
+ * The longest a certificate this product receives may live, from the day it
+ * is issued. Let's Encrypt (and the other authority a host's web server may
+ * use by default) issue 90 days or less; the margin keeps a longer-lived
+ * setting from refusing a real renewal. A certificate that lives longer, or
+ * ends further ahead than that, did not come from one of them.
+ */
+export const MAX_ISSUED_LIFETIME_DAYS = 100
+/** How far ahead of now a start date may be (clock skew, back-dating is the usual case). */
+export const MAX_ISSUED_START_SKEW_MS = DAY_MS
+
+/** The authority behind a web server's own internal certificates (`tls internal`). */
+const INTERNAL_CA_ISSUER = /caddy local authority/i
+
+/**
+ * A validity window no public authority issues: ends too far ahead, lasts too
+ * long or starts in the future. An already expired pair is a separate refusal.
+ */
+export function implausibleValidity(parsed: ParsedCertificate, now: Date): boolean {
+  return implausibleWindow(parsed.notBefore.getTime(), parsed.notAfter.getTime(), now)
+}
+
+/**
+ * The window check on bare timestamps, shared by the incoming leaf and the
+ * stored pair. `notBefore` is NaN when it is not known (only the end is checked).
+ */
+function implausibleWindow(notBefore: number, notAfter: number, now: Date): boolean {
+  const maxMs = MAX_ISSUED_LIFETIME_DAYS * DAY_MS
+  return (
+    notAfter > now.getTime() + maxMs ||
+    notAfter - notBefore > maxMs + DAY_MS ||
+    notBefore > now.getTime() + MAX_ISSUED_START_SKEW_MS
+  )
+}
+
+/** Name, expiry, validity window, self-signed and private-issuer checks on the leaf. */
 function leafProblem(parsed: ParsedCertificate, hostname: string, now: Date): Refused | null {
   if (!coversHostname(parsed.dnsNames, hostname)) return refused('certificate_not_for_hostname')
   if (parsed.notAfter.getTime() <= now.getTime()) return refused('certificate_expired')
+  if (implausibleValidity(parsed, now)) return refused('implausible_validity')
   if (parsed.subject === parsed.issuer) return refused('self_signed_certificate')
+  if (INTERNAL_CA_ISSUER.test(parsed.issuer)) return refused('private_ca_certificate')
   return null
 }
 
@@ -237,19 +284,28 @@ async function checkPair(
  * later (a renewal): an older valid pair sent again, or one with the very same
  * expiry, never overwrites a newer one. A pair that covers every stored name
  * (the same names, or more: a renewal that now also covers the www name a site
- * adds) is a renewal too. A certificate for a different name of a multi-name
- * row (Caddy issues one per name) does not overwrite a still-valid pair for
- * another name.
+ * adds) is a renewal too. A pair whose validity window no public authority
+ * issues never replaces anything, and a stored pair with such a window (by the
+ * same check) is replaced by any plausible one. A certificate for a different
+ * name of a multi-name row (Caddy issues one per name) does not overwrite a
+ * still-valid pair for another name.
  */
 export function replaces(
-  stored: { names: string[] | undefined; notAfter: string | null },
+  stored: { names: string[] | undefined; notAfter: string | null; notBefore?: string | null },
   hasStoredPair: boolean,
   parsed: ParsedCertificate,
   now: Date
 ): boolean {
+  // A pair with an implausible window never wins, whatever the row holds.
+  if (implausibleValidity(parsed, now)) return false
   if (!hasStoredPair) return true
   const storedNotAfter = stored.notAfter === null ? Number.NaN : Date.parse(stored.notAfter)
   if (Number.isNaN(storedNotAfter)) return true
+  // A stored pair whose window fails the same check (ends too far ahead, lasts
+  // too long, starts ahead; kept from before the check existed) must not block
+  // real renewals.
+  const storedNotBefore = stored.notBefore ? Date.parse(stored.notBefore) : Number.NaN
+  if (implausibleWindow(storedNotBefore, storedNotAfter, now)) return true
   const coversStored =
     stored.names === undefined ||
     stored.names.every((name) => coversHostname(parsed.dnsNames, name))
@@ -333,26 +389,26 @@ function requestIsOpenFor(metadata: unknown, input: IssuedCertificateInput, now:
  * A daemon may only supply the certificate of a hosting placed on its own
  * server; a pin on any other server's hosting is none of its business.
  */
-async function rowsPinnedOnServer<T extends { id: string }>(
+export async function rowsPinnedOnServer<T extends { id: string }>(
   tx: Db,
   candidates: T[],
   serverId: string
 ): Promise<T[]> {
+  const candidateIds = candidates.map((row) => row.id)
   const pinned = await tx
     .select({ tlsId: hosting.tlsId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(
-      and(
-        eq(environment.serverId, serverId),
-        inArray(
-          hosting.tlsId,
-          candidates.map((row) => row.id)
-        )
-      )
-    )
-  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
+    .where(and(eq(environment.serverId, serverId), inArray(hosting.tlsId, candidateIds)))
+  const namePinned = await tx
+    .select({ tlsId: hostname.tlsId })
+    .from(hostname)
+    .innerJoin(hosting, eq(hosting.id, hostname.hostingId))
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .where(and(eq(environment.serverId, serverId), inArray(hostname.tlsId, candidateIds)))
+  const pinnedIds = new Set([...pinned, ...namePinned].map((row) => row.tlsId))
   return candidates.filter((row) => pinnedIds.has(row.id))
 }
 
@@ -411,6 +467,10 @@ async function noteCaptureOnly(
     .where(eq(tls.id, row.id))
 }
 
+function hasWildcardName(names: string[]): boolean {
+  return names.some((name) => name.startsWith('*.'))
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -441,7 +501,14 @@ async function writePair(
     (row) =>
       row.status === 'automatic' &&
       isManagedRowMetadata(row.metadata) &&
-      // A row covers the hostname, or (for an open request) the hostname is one the
+      // A row with a wildcard name is ordered by the panel over DNS: a server's own web
+      // server cannot issue it, so a leaf that does not cover every one of the row's names
+      // (its own single-name certificate) never lands on it. A row that gains a name while a
+      // wildcard order is open has its pair refused until the request times out. Other rows take a pair per
+      // name, as Caddy issues them.
+      (!hasWildcardName(row.metadata.dnsNames) ||
+        row.metadata.dnsNames.every((name) => coversHostname(parsed.dnsNames, name))) &&
+      // The row covers the hostname, or (for an open request) the hostname is one the
       // order asked for beyond the row's own names: a www name its site adds. Then the
       // leaf must also cover every one of the row's own names, so nothing narrower
       // than the row ever lands on it.
@@ -468,7 +535,13 @@ async function writePair(
       return
     }
     const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
-    if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
+    const storedNotBefore = (metadata as { notBefore?: unknown }).notBefore
+    const storedPair = {
+      names: storedNames,
+      notAfter: row.notAfter,
+      notBefore: typeof storedNotBefore === 'string' ? storedNotBefore : null,
+    }
+    if (!replaces(storedPair, hasStoredPair, parsed, now)) {
       await noteCaptureOnly(tx, row, input, parsed, now)
       return
     }

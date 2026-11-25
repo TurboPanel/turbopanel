@@ -19,11 +19,12 @@ tests**). Package manager is pnpm; Deno tasks are in `deno.json`.
 - Types: `deno task check:types`, `pnpm check:workers-types`,
   `pnpm check:workers-bundle`.
 - Guards: `pnpm check:test-inventory`, `check:import-boundaries`,
+  `check:source-layout`,
   `check:vocabulary`, `check:ca-boundary`, `check:instance-acme-boundary`,
   `check:workers-acme-boundary`,
   `check:contract-drift`, `check:migration-*`, `check:metrics-boundaries`,
   `check:query-cache-boundaries`, `notices:check`.
-- Guide pointers: `pnpm check:guide-references` (paths named in `AGENTS.md` and `docs/*.md` must exist).
+- Guide pointers: `pnpm check:guide-references` (links and backticked `src/`, `scripts/`, `docs/`, `.github/` and `./` paths in every `AGENTS.md` and `docs/*.md` must exist).
 - Database: `pnpm generate` (new migration), `pnpm migrate`.
 - Format: `pnpm exec prettier --write <changed files>` then `--check`; the
   pre-commit hook (`.githooks/pre-commit`) runs the secret scan and the same

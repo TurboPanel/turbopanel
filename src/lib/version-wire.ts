@@ -4,11 +4,11 @@
  * Daemon ↔ control plane: the daemon reports its semver as
  * `daemonBuild.version` in the hello / heartbeat / ping (turbopaneld
  * src/app/version.ts). This module holds it against the floor the control plane
- * supports. A daemon below the floor keeps its connection — the update path
- * *is* that connection — but the command consumer refuses to dispatch to it
- * and the servers page says why. A daemon that reports no version at all is
- * `unknown`: every build before 0.1.0 is one, so this stays a flag rather
- * than a refusal until the fleet is re-enrolled on tagged builds.
+ * supports and against `DAEMON_WIRE_FEATURES`, which its hello must list in
+ * full. A daemon below the floor, missing a feature, or reporting no version
+ * (or one that does not parse) keeps its connection — the update path *is*
+ * that connection — but the command consumer refuses to dispatch to it
+ * (`daemon_update_required`) and the servers page says why.
  *
  * App ↔ instance: the instance stamps `x-turbopanel-version` on every
  * response and `/api/health` carries `version`; a client that is not the
@@ -32,10 +32,8 @@
  * feature flags, distinct from the metrics hardware-profile capability plan.
  *
  * `DAEMON_WIRE_FEATURES` is the advertised feature set: the peer says what it
- * supports, on `hello.features` and the attach `version` frame. That is
- * distinct from `DAEMON_FEATURE_MIN_VERSIONS`, which infers support from a
- * semver floor. A new wire message is gated on the advertisement. It does
- * not raise either floor.
+ * supports, on `hello.features` and the attach `version` frame. A new wire
+ * message is gated on the advertisement. It does not raise either floor.
  *
  * Workers and Deno both import this module — no Deno APIs.
  */
@@ -106,61 +104,92 @@ export function compareSemver(a: ParsedSemver, b: ParsedSemver): number {
   return a.prerelease.length - b.prerelease.length
 }
 
-export type DaemonSupportStatus = 'supported' | 'unsupported' | 'unknown'
+export type DaemonSupportStatus = 'supported' | 'unsupported'
+
+/** The one code a refused daemon carries on the command, the status and the API. */
+export const DAEMON_UPDATE_REQUIRED_CODE = 'daemon_update_required'
 
 export type DaemonSupport = {
   status: DaemonSupportStatus
   /** The version the daemon reported, verbatim; `null` when it sent none or something unparsable. */
   version: string | null
   minVersion: string
+  /** Set when `status` is `unsupported`. */
+  code?: typeof DAEMON_UPDATE_REQUIRED_CODE
+  /** Every `DAEMON_WIRE_FEATURES` name the daemon's hello does not list; empty when it lists all. */
+  missingFeatures?: string[]
+  /** The sentence the command consumer fails commands with and the servers page shows. */
+  reason?: string
+}
+
+/** The advertised names this control plane requires of every daemon. */
+export function missingDaemonWireFeatures(
+  advertised: readonly string[] | undefined | null
+): string[] {
+  const have = new Set(advertised ?? [])
+  return DAEMON_WIRE_FEATURES.filter((name) => !have.has(name))
 }
 
 /**
- * Hold a daemon's reported version against `MIN_SUPPORTED_DAEMON_VERSION`.
- * No version, or one that is not a semver, is `unknown` — see the module
- * comment for why that is not `unsupported` yet.
+ * Hold a daemon against what this control plane requires: a version that
+ * parses and is at or above `MIN_SUPPORTED_DAEMON_VERSION`, and a hello that
+ * lists every name in `DAEMON_WIRE_FEATURES`. It fails closed: no version, an
+ * unparsable one, or no stored feature list is `unsupported`.
+ *
+ * A refused daemon keeps its connection. The control plane only withholds
+ * commands from it; the `update` message that brings it current is not a
+ * command and is never gated here.
  */
 export function resolveDaemonSupport(
   reportedVersion: string | undefined | null,
+  advertisedFeatures: readonly string[] | undefined | null,
   minVersion: string = MIN_SUPPORTED_DAEMON_VERSION
 ): DaemonSupport {
   const parsed = parseSemver(reportedVersion)
   const floor = parseSemver(minVersion)
-  if (!parsed || !floor) {
-    return {
-      status: 'unknown',
-      version: parsed ? reportedVersion!.trim() : null,
+  const version = parsed ? reportedVersion!.trim() : null
+  const missingFeatures = missingDaemonWireFeatures(advertisedFeatures)
+  const belowFloor = !parsed || !floor || compareSemver(parsed, floor) < 0
+  if (belowFloor || missingFeatures.length > 0) {
+    const refused: DaemonSupport = {
+      status: 'unsupported',
+      version,
       minVersion,
+      code: DAEMON_UPDATE_REQUIRED_CODE,
+      missingFeatures,
     }
+    return { ...refused, reason: daemonUnsupportedReason(refused) }
   }
-  return {
-    status: compareSemver(parsed, floor) < 0 ? 'unsupported' : 'supported',
-    version: reportedVersion!.trim(),
-    minVersion,
-  }
+  return { status: 'supported', version, minVersion, missingFeatures: [] }
 }
+
+const REASON_FEATURE_LIST_CAP = 8
 
 /** The command consumer's refusal, and the servers page's explanation. */
 export function daemonUnsupportedReason(support: DaemonSupport): string {
-  return `Daemon version ${
-    support.version ?? 'unknown'
-  } is below the supported minimum ${support.minVersion} — update the daemon`
+  const parts: string[] = []
+  const missing = support.missingFeatures ?? []
+  if (support.version === null) {
+    parts.push('reports no usable version')
+  } else if (compareVersionStrings(support.version, support.minVersion) < 0) {
+    parts.push(`version ${support.version} is below the supported minimum ${support.minVersion}`)
+  }
+  if (missing.length > 0) {
+    const shown = missing.slice(0, REASON_FEATURE_LIST_CAP).join(', ')
+    const more = missing.length - REASON_FEATURE_LIST_CAP
+    parts.push(
+      `does not list ${missing.length} required feature${missing.length === 1 ? '' : 's'}: ${shown}${
+        more > 0 ? ` and ${more} more` : ''
+      }`
+    )
+  }
+  return `${DAEMON_UPDATE_REQUIRED_CODE}: daemon ${parts.join(' and ')} — update the daemon`
 }
 
-/**
- * Panel features that need a daemon at or above a semver (the daemon renders
- * the artifact). Twin of `DAEMON_FEATURE_MIN_VERSIONS` in
- * `turbopaneld/src/instance/version-wire.ts` — contract-drift keeps them equal.
- *
- * `instance-cert-sources-per-hostname` opens when the connected daemon is the
- * release that renders per-hostname certificate sources in
- * `orchestration/roles/caddy/templates/Caddyfile.j2` (the 0.1.1 daemon line).
- * A panel-visible admin feature gated on a daemon artifact adds its entry
- * here. The UI phase calls `resolveDaemonCapabilities` and does not
- * re-implement semver comparison. An unknown peer version is not supported.
- */
-export const DAEMON_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {
-  'instance-cert-sources-per-hostname': '0.1.1',
+function compareVersionStrings(a: string, b: string): number {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  return pa && pb ? compareSemver(pa, pb) : 0
 }
 
 /**
@@ -168,9 +197,7 @@ export const DAEMON_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {
  * `DAEMON_WIRE_FEATURES` in `turbopaneld/src/instance/version-wire.ts` —
  * contract-drift keeps them equal.
  *
- * This list is what the peer says it supports. `DAEMON_FEATURE_MIN_VERSIONS`
- * is the semver-floor inference for daemon-rendered artifacts. Do not treat
- * them as the same gate.
+ * This list is what the peer says it supports.
  */
 export const DAEMON_WIRE_FEATURES = [
   'managed-upgrade-v1',
@@ -199,6 +226,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tls-capture-v1',
   'acme-issue-v1',
   'command-recovery-v1',
+  'command-recovery-v2',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
   'server-network-check-v1',
@@ -224,7 +252,6 @@ export const DAEMON_WIRE_FEATURES = [
   'signin-v2',
   'hosting-via-header-v1',
   'dev-host-v1',
-  'topology-generation-optional-v1',
   'signed-reports-v1',
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
@@ -240,22 +267,16 @@ export const DAEMON_WIRE_FEATURES = [
   'site-db-url-ca-v1',
   'project-cache-v1',
   'tunnel-lock-add-v1',
+  'build-limits-v1',
+  'tunnel-peer-mtls-v1',
+  'hosting-name-tls-v1',
+  'acme-issue-dns-v1',
+  'compose-checkout-v1',
+  'network-shares-v1',
+  'terminal-container-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
-
-/**
- * The control plane no longer needs the daemon's topology generation numbers:
- * it matches a metrics sample to the stored topology by the entity ids the
- * sample names, and tells topology reports apart by their content
- * (`src/features/servers/topology-identity.ts`). A daemon attached to a
- * control plane that lists this leaves `metadata.topologyGeneration` off its
- * samples, `generation` and `bootGeneration` off its `topology-report`, and
- * stops sending the `topology_generation_changed` event. Both are still
- * accepted from older daemons.
- */
-export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
-  'topology-generation-optional-v1'
 
 /**
  * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only
@@ -274,6 +295,15 @@ export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-
  * ignore the field and keep the data without saying so.
  */
 export const STOP_REMOVE_VOLUMES_FEATURE: DaemonWireFeature = 'environment-stop-remove-volumes-v1'
+
+/**
+ * `environment.deploy` may carry `composeCheckout`: the repository a Git
+ * Compose project's compose file was read from, which the daemon checks out
+ * before the build and start so relative paths in the compose file resolve.
+ * Every daemon must list it (the control plane holds a daemon back that does
+ * not), so the field is sent whenever the project follows a repository file.
+ */
+export const COMPOSE_CHECKOUT_FEATURE: DaemonWireFeature = 'compose-checkout-v1'
 
 /**
  * The daemon takes any application mode in `nativeAppServices[].appMode` that
@@ -343,6 +373,25 @@ export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
 
 /**
+ * The daemon reads `nameTls` on a hosting entry of `environment.deploy`: each
+ * entry gives one served name (and its www redirect) its own certificate or
+ * mode, over the row's `tlsId` and `tlsMode`. A row whose names resolve to
+ * different wire values goes only to a daemon that lists this feature; the
+ * control plane refuses the server otherwise (`name_certificates_need_update`)
+ * and never sends a mixed row to an older daemon, which would drop the field.
+ */
+export const HOSTING_NAME_TLS_FEATURE: DaemonWireFeature = 'hosting-name-tls-v1'
+
+/**
+ * The daemon can place a certificate order over the DNS proof (`challenge:
+ * 'dns-01'` on `acme-issue-request`), asking the control plane to publish and
+ * remove the TXT records (`acme-dns-publish`, `acme-dns-remove`). A daemon
+ * without this feature drops `challenge` and would run the HTTP proof, so the
+ * control plane never sends `dns-01` to one.
+ */
+export const ACME_ISSUE_DNS_FEATURE: DaemonWireFeature = 'acme-issue-dns-v1'
+
+/**
  * The daemon places the certificate order for a name set when the control plane
  * asks (`acme-issue-request`), and passes the HTTP proof path on for another
  * server (`acme-proof-forward`). The control plane sends these messages only to
@@ -378,6 +427,14 @@ export const DEPLOY_CONFIG_FILES_FEATURE: DaemonWireFeature = 'deploy-config-fil
  * fixed run cap, worded as "no result came back".
  */
 export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
+
+/**
+ * The daemon sends `hello.commandState` (`CommandStateReport`): the ids it
+ * still holds state for, in memory and in its on-disk journal. With
+ * `complete: true`, a sent and unacked command whose id is missing was never
+ * started by that daemon, so it is sent again whatever its type.
+ */
+export const COMMAND_RECOVERY_V2_FEATURE: DaemonWireFeature = 'command-recovery-v2'
 
 /**
  * The daemon reports the old primary's final write position on a Postgres
@@ -498,9 +555,7 @@ export const TUNNEL_TABLE_GENERATION_FEATURE: DaemonWireFeature = 'tunnel-table-
 
 /**
  * The daemon understands `deploy-cancel` and stops an `environment.deploy`
- * before it switches over, leaving the previous version serving. Without it the
- * control plane never sends the message and answers 409 `cancel_unsupported`
- * for a deploy the daemon already acknowledged.
+ * before it switches over, leaving the previous version serving.
  */
 export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
 
@@ -537,6 +592,14 @@ export const PROJECT_CACHE_FEATURE: DaemonWireFeature = 'project-cache-v1'
  * locked without a deploy. Without it that lock waits for the next deploy.
  */
 export const TUNNEL_LOCK_ADD_FEATURE: DaemonWireFeature = 'tunnel-lock-add-v1'
+
+/**
+ * `environment.deploy` carries `buildLimits` on each `sourceMaterial[]` entry:
+ * the most CPU cores and memory one build may use (the smallest of the
+ * organization, server and service limits). Sent only to a daemon that lists
+ * it; an older daemon would ignore the field and build with its fixed limit.
+ */
+export const BUILD_LIMITS_FEATURE: DaemonWireFeature = 'build-limits-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`
@@ -785,14 +848,6 @@ function resolvePeerCapabilities(
   return out
 }
 
-/** Which daemon-rendered features a reported daemon version can serve. */
-export function resolveDaemonCapabilities(
-  reportedVersion: string | undefined | null,
-  floors: Readonly<Record<string, string>> = DAEMON_FEATURE_MIN_VERSIONS
-): Record<string, boolean> {
-  return resolvePeerCapabilities(reportedVersion, floors)
-}
-
 /** Which instance-side features a reported control-plane version can serve. */
 export function resolveInstanceCapabilities(
   reportedVersion: string | undefined | null,
@@ -800,3 +855,21 @@ export function resolveInstanceCapabilities(
 ): Record<string, boolean> {
   return resolvePeerCapabilities(reportedVersion, floors)
 }
+
+/**
+ * `server.tunnel.routes` carries `peerClientAuth`, and the daemon shows its
+ * peer certificate as a client certificate on the hop between servers. Sent
+ * only to a daemon that lists it; an older daemon ignores the field and its
+ * peer site asks for no client certificate.
+ */
+export const TUNNEL_PEER_MTLS_FEATURE: DaemonWireFeature = 'tunnel-peer-mtls-v1'
+
+/**
+ * `terminal-container-v1`: the control plane may send `shell-open` and
+ * `shell-kill` on the signed session and relay binary terminal frames over the
+ * same socket. The daemon opens an interactive `docker exec` in a tenant
+ * container and answers with signed `shell-opened`, `shell-closed` and
+ * `shell-error` reports. The control plane sends none of it to a daemon that
+ * does not list the feature.
+ */
+export const TERMINAL_CONTAINER_FEATURE: DaemonWireFeature = 'terminal-container-v1'

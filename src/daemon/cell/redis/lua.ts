@@ -5,7 +5,7 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 else
   return 0
 end
-`;
+`
 
 /** Atomically renew a lease only when the current token matches. */
 export const COMPARE_AND_RENEW = `
@@ -14,7 +14,7 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 else
   return 0
 end
-`;
+`
 
 /**
  * Demote stale daemon socket presence when the Redis lease has expired or
@@ -69,7 +69,7 @@ if connectionId ~= "" then
   return { 1, connectionId }
 end
 return 1
-`;
+`
 
 /**
  * Atomic token-bucket rate limit (mailer-style refill).
@@ -108,4 +108,51 @@ end
 redis.call("HSET", KEYS[1], "tokens", tostring(tokens), "ts", tostring(ts))
 redis.call("PEXPIRE", KEYS[1], ttlMs)
 return allowed
-`;
+`
+
+/**
+ * Send an existing request again, in one step: only while its hash exists with
+ * status `sent` and no ack, add the new delivery to the outbox stream and
+ * record it in the request's delivery map. Never creates a request, so one
+ * that expired leaves nothing behind.
+ *
+ * KEYS[1] request hash, KEYS[2] outbox stream
+ * ARGV[1] deliveryId, ARGV[2] requestId, ARGV[3] kind, ARGV[4] payload JSON,
+ * ARGV[5] enqueuedAt
+ * Returns 0 when refused, 1 when the delivery id is already recorded, else the
+ * new stream id.
+ */
+export const REDELIVER_SENT_REQUEST = `
+local status = redis.call("HGET", KEYS[1], "status")
+if status ~= "sent" then
+  return 0
+end
+local ackAt = redis.call("HGET", KEYS[1], "ackAt")
+if ackAt and ackAt ~= "" then
+  return 0
+end
+
+local deliveries = {}
+local raw = redis.call("HGET", KEYS[1], "deliveries")
+if raw and raw ~= "" then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and type(decoded) == "table" then
+    deliveries = decoded
+  end
+end
+if deliveries[ARGV[1]] then
+  return 1
+end
+
+local streamId = redis.call(
+  "XADD", KEYS[2], "*",
+  "deliveryId", ARGV[1],
+  "requestId", ARGV[2],
+  "kind", ARGV[3],
+  "payload", ARGV[4],
+  "enqueuedAt", ARGV[5]
+)
+deliveries[ARGV[1]] = streamId
+redis.call("HSET", KEYS[1], "deliveries", cjson.encode(deliveries))
+return streamId
+`

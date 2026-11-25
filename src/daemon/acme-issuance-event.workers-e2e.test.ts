@@ -7,9 +7,21 @@ import { eq } from 'drizzle-orm'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
-import { setDaemonCellProjectionDbFactoryForTests } from './cell/do.ts'
+import {
+  setDaemonCellProjectionDbFactoryForTests,
+  setDaemonCellUnsignedSessionsAllowedForTests,
+} from './cell/do.ts'
 import { createWorkersDb, endDbConnection } from '../db/connection.ts'
-import { organization, server, tls } from '../db/schema.ts'
+import {
+  environment,
+  hosting,
+  organization,
+  project,
+  server,
+  service,
+  tls,
+  workspace,
+} from '../db/schema.ts'
 
 const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 
@@ -34,6 +46,8 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
       return
     }
     setDaemonCellProjectionDbFactoryForTests(null)
+    // These frames are unsigned: the cell takes them only through the test seam.
+    setDaemonCellUnsignedSessionsAllowedForTests(true)
     const realDb = createWorkersDb(env.HYPERDRIVE)
     try {
       const [org] = await realDb.insert(organization).values({}).returning({ id: organization.id })
@@ -60,6 +74,41 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
         .values({ organizationId: org!.id, name: 'acme-e2e' })
         .returning({ id: server.id })
       const serverId = srv!.id
+      // A hosting on this server pins the row; only a pinned row is the
+      // reporting server's to write. A second row, covering another name and
+      // pinned by nothing on this server, must stay untouched.
+      const otherHostname = `acme-e2e-other-${crypto.randomUUID().slice(0, 8)}.example.com`
+      const [otherRow] = await realDb
+        .insert(tls)
+        .values({
+          organizationId: org!.id,
+          source: 'lets_encrypt',
+          status: 'automatic',
+          metadata: { dnsNames: [otherHostname] },
+        })
+        .returning({ id: tls.id })
+      const [wsp] = await realDb
+        .insert(workspace)
+        .values({ organizationId: org!.id, name: 'WS' })
+        .returning({ id: workspace.id })
+      const [proj] = await realDb
+        .insert(project)
+        .values({ workspaceId: wsp!.id, organizationId: org!.id, name: 'P' })
+        .returning({ id: project.id })
+      const [envRow] = await realDb
+        .insert(environment)
+        .values({ projectId: proj!.id, name: 'production', isPrimary: true, serverId })
+        .returning({ id: environment.id })
+      const [svc] = await realDb
+        .insert(service)
+        .values({ environmentId: envRow!.id, name: 'web', composeServiceName: 'web' })
+        .returning({ id: service.id })
+      await realDb.insert(hosting).values({
+        serviceId: svc!.id,
+        name: hostname,
+        tlsId: row!.id,
+        options: { hostnames: [hostname] },
+      })
       const keyId = crypto.randomUUID()
       const secrets = await deriveDaemonJwtKeyring(
         parseSecretsFromEnv(
@@ -77,6 +126,17 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
       if (!ws) throw new Error('missing websocket')
       ws.accept()
 
+      // Frames are handled in order: the unpinned name first, so by the time the
+      // pinned row shows its error the other frame has already been handled.
+      ws.send(
+        JSON.stringify({
+          type: 'acme-issuance-event',
+          hostname: otherHostname,
+          ok: false,
+          errorMessage: 'received fatal alert: InternalError',
+          at: new Date().toISOString(),
+        })
+      )
       ws.send(
         JSON.stringify({
           type: 'acme-issuance-event',
@@ -110,6 +170,11 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
         }
       }
       if (!matched) throw lastError
+      const [untouched] = await realDb
+        .select({ metadata: tls.metadata })
+        .from(tls)
+        .where(eq(tls.id, otherRow!.id))
+      expect((untouched?.metadata as { acme?: unknown } | null)?.acme).toBeUndefined()
 
       ws.close(1000, 'test done')
 
@@ -145,6 +210,7 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
     } finally {
       await endDbConnection(realDb)
       setDaemonCellProjectionDbFactoryForTests(null)
+      setDaemonCellUnsignedSessionsAllowedForTests(false)
     }
   }, 20_000)
 })

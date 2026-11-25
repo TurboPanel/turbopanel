@@ -16,12 +16,9 @@
  *   treatment `email-settings.ts` gives an SMTP password) and never returned
  *   to a client in full — {@link describeAlertWebhook} is what a settings
  *   panel renders.
- * Since 2026-09-18 the webhook *is* a notification channel (instance scope,
- * `webhook`, labelled "Operator alert webhook", rule `*`): the legacy
- * `ALERT_WEBHOOK_URL` setting is adopted into one on first touch, and the
- * admin route below is a thin face over that channel. `getAlertWebhookUrl`
- * and `setAlertWebhookUrl` read and write the legacy row only and exist for
- * the adoption and its tests.
+ * The webhook is a notification channel (instance scope, `webhook`, labelled
+ * "Operator alert webhook", rule `*`), and the admin route below is a thin
+ * face over that channel.
  *
  * - **The URL is an SSRF vector, within limits.** It is typed in by an admin
  *   and then fetched server-side, so it goes through the same
@@ -35,14 +32,7 @@
  *   forge URL keeps the full rule; it is fetched with the App's credentials
  *   attached.
  */
-import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { setting } from '../../db/schema.ts'
-import {
-  decryptSecret,
-  encryptSecret,
-  isSealedEnvelope,
-} from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   type OutboundUrlRejection,
@@ -53,11 +43,9 @@ import {
   createNotificationChannel,
   deleteChannel,
   getOperatorWebhookChannel,
-  type NotificationChannelRecord,
   OPERATOR_WEBHOOK_LABEL,
   replaceRulesForChannel,
   resolveChannelAddress,
-  setChannelAllOrganizations,
   updateChannelAddress,
 } from '../notifications/records.ts'
 
@@ -75,8 +63,6 @@ export type AlertWebhookPolicy = {
  * gate through the option.
  */
 export const ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: true }
-
-export const ALERT_WEBHOOK_URL_KEY = 'ALERT_WEBHOOK_URL'
 
 export class AlertWebhookUrlError extends Error {
   readonly reason: OutboundUrlRejection
@@ -105,63 +91,12 @@ export async function assertAlertWebhookUrlAllowed(
   return url
 }
 
-/**
- * The operator webhook channel, switched on to hear every organization's
- * events if it was made before that switch existed (it must keep paging when
- * a server goes dark). Only this channel is touched; the update is guarded on
- * the switch being off, so it is a no-op once on.
- */
-async function switchedOnOperatorWebhook(db: Db): Promise<NotificationChannelRecord | null> {
-  const channel = await getOperatorWebhookChannel(db)
-  if (!channel || channel.allOrganizations) return channel
-  await setChannelAllOrganizations(db, channel.id, true)
-  console.info('operator alert webhook switched on to hear every organization')
-  return { ...channel, allOrganizations: true }
-}
-
-/**
- * Fold the legacy `ALERT_WEBHOOK_URL` setting into the notifications model:
- * one instance-scoped webhook channel labelled {@link OPERATOR_WEBHOOK_LABEL}
- * with a `*` rule at `info` — every event, the firehose the setting always
- * was. Idempotent and cheap: once the row is gone this is one indexed read.
- * Called from the admin route and from the sweep's resolver, so an instance
- * upgraded past the setting keeps alerting with nothing re-typed.
- *
- * Returns the channel the setting became (or already was), or null when
- * neither exists.
- */
-export async function adoptLegacyAlertWebhook(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
-): Promise<NotificationChannelRecord | null> {
-  const existing = await switchedOnOperatorWebhook(db)
-  const legacy = await getAlertWebhookUrl(db, dataEncryptionSecrets)
-  if (!legacy) return existing
-  if (existing) {
-    // Both exist: the channel is the truth; the setting is a leftover.
-    await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-    return existing
-  }
-  if (!dataEncryptionSecrets) return null
-  const channel = await createNotificationChannel(db, dataEncryptionSecrets, {
-    scope: 'instance',
-    kind: 'webhook',
-    label: OPERATOR_WEBHOOK_LABEL,
-    address: legacy,
-    // The operator webhook pages on organization events such as a server going dark.
-    isAllOrganizationsNotified: true,
-  })
-  await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
-  await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-  return channel
-}
-
-/** The operator webhook's plain URL — the channel first, the legacy setting adopted on the way. */
+/** The operator webhook's plain URL, read from its channel. */
 export async function resolveOperatorWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<string | null> {
-  const channel = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
+  const channel = await getOperatorWebhookChannel(db)
   if (!channel) return null
   return await resolveChannelAddress(dataEncryptionSecrets, channel)
 }
@@ -178,7 +113,7 @@ export async function setOperatorWebhookUrl(
   url: string | null,
   policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY
 ): Promise<void> {
-  const existing = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
+  const existing = await getOperatorWebhookChannel(db)
   if (url === null) {
     if (existing) await deleteChannel(db, existing.id)
     return
@@ -218,52 +153,4 @@ export function describeAlertWebhook(url: string | null): {
   } catch {
     return { configured: true, origin: null }
   }
-}
-
-/**
- * Read the configured webhook, or `null` when none is set.
- *
- * Never throws: a stored value this build cannot unseal (a rotated data key,
- * a row written by a different instance) means no alerts, not a failed sweep.
- */
-export async function getAlertWebhookUrl(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
-): Promise<string | null> {
-  const rows = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-    .limit(1)
-  const stored = rows[0]?.value
-  if (typeof stored !== 'string' || stored.length === 0) return null
-  if (!isSealedEnvelope(stored)) return stored
-  if (!dataEncryptionSecrets) return null
-  try {
-    return await decryptSecret(dataEncryptionSecrets, stored)
-  } catch {
-    return null
-  }
-}
-
-/** Store the webhook, or clear it with `null`. */
-export async function setAlertWebhookUrl(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
-  url: string | null,
-  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY
-): Promise<void> {
-  if (url === null) {
-    await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-    return
-  }
-  const allowed = await assertAlertWebhookUrlAllowed(url, policy)
-  if (!dataEncryptionSecrets) {
-    throw new Error('data encryption secrets required to store the alert webhook URL')
-  }
-  const value = await encryptSecret(dataEncryptionSecrets, allowed)
-  await db.insert(setting).values({ key: ALERT_WEBHOOK_URL_KEY, value }).onConflictDoUpdate({
-    target: setting.key,
-    set: { value },
-  })
 }

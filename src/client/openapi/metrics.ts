@@ -334,7 +334,7 @@ export const metricsSchemas = {
             type: 'null',
           },
         ],
-        description: '`null` when the server has not reported a usable topology generation yet.',
+        description: '`null` when the server has not reported a usable topology yet.',
       },
       cpuLimits: { $ref: '#/components/schemas/EffectiveCpuThermalLimits' },
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },

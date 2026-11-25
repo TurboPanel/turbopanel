@@ -256,7 +256,7 @@ test('a project delete waits for a site being pinned elsewhere, and keeps the en
   }
 })
 
-async function removalKeeps(open: boolean): Promise<boolean> {
+async function removalKeeps(open: boolean, leftover = false): Promise<boolean> {
   const db = createDenoDb()
   const w = await world(db)
   try {
@@ -265,7 +265,22 @@ async function removalKeeps(open: boolean): Promise<boolean> {
       .update(tls)
       .set({
         metadata: withHttpIssuanceState(
-          row!.metadata,
+          leftover
+            ? {
+                ...(row!.metadata as object),
+                dnsCert: {
+                  carrierId: 'carrier-1',
+                  records: [
+                    {
+                      zoneId: 'zone-1',
+                      recordId: 'rec-1',
+                      name: '_acme-challenge.a.example.com',
+                      createdAt: new Date().toISOString(),
+                    },
+                  ],
+                },
+              }
+            : row!.metadata,
           newHttpIssuanceState({
             issuingServerId: 'a',
             requestId: 'req_open',
@@ -287,4 +302,9 @@ test('an entry with a server-placed order under way is kept when no site pins it
   if (!dbUrl) return skipWithoutDatabase('unused Lets Encrypt entry tests')
   assertEquals(await removalKeeps(true), true)
   assertEquals(await removalKeeps(false), false)
+})
+
+test('an entry whose challenge records are not removed yet is kept until they are', async () => {
+  if (!dbUrl) return skipWithoutDatabase('unused Lets Encrypt entry tests')
+  assertEquals(await removalKeeps(false, true), true)
 })

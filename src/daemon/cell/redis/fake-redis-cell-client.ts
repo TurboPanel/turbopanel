@@ -8,6 +8,7 @@ import {
   COMPARE_AND_RENEW,
   RATE_LIMIT_TOKEN_BUCKET,
   RECONCILE_STALE_SOCKET_PRESENCE,
+  REDELIVER_SENT_REQUEST,
 } from './lua.ts'
 
 type StringEntry = { value: string; expiresAt?: number }
@@ -333,21 +334,41 @@ export class FakeRedisCellClient {
     group: string,
     consumer: string,
     minIdleMs: number,
-    _startId: string,
+    startId: string,
     count: number
   ): Promise<StreamEntry[]> {
+    return (await this.xautoclaimPage(key, group, consumer, minIdleMs, startId, count)).entries
+  }
+
+  /** Like Redis: scans the pending list from `startId` (inclusive); `next` is `0-0` at the end. */
+  async xautoclaimPage(
+    key: string,
+    group: string,
+    consumer: string,
+    minIdleMs: number,
+    startId: string,
+    count: number
+  ): Promise<{ next: string; entries: StreamEntry[] }> {
     const { state, groupState } = this.#groupOrNoGroup(key, group, 'XAUTOCLAIM')
     const reclaimed: StreamEntry[] = []
     const at = nowMs()
-    for (const [entryId, pending] of groupState.pending.entries()) {
+    const ids = [...groupState.pending.keys()]
+      .filter((id) => streamIdSeq(id, startId) >= 0)
+      .sort(streamIdSeq)
+    let next = '0-0'
+    for (const entryId of ids) {
+      if (reclaimed.length >= count) {
+        next = entryId
+        break
+      }
+      const pending = groupState.pending.get(entryId)!
       if (at - pending.idleSince < minIdleMs) continue
       const entry = state.entries.find((e) => e.id === entryId)
       if (!entry) continue
       groupState.pending.set(entryId, { consumer, idleSince: at })
       reclaimed.push(entry)
-      if (reclaimed.length >= count) break
     }
-    return reclaimed
+    return { next, entries: reclaimed }
   }
 
   async xclaim(
@@ -466,11 +487,39 @@ export class FakeRedisCellClient {
       return this.#reconcileStaleSocketPresence(keys, argv)
     }
 
+    if (script === REDELIVER_SENT_REQUEST) {
+      return this.#redeliverSentRequest(keys, argv)
+    }
+
     if (script === RATE_LIMIT_TOKEN_BUCKET) {
       return this.#rateLimitTokenBucket(keys[0]!, argv)
     }
 
     throw new Error(`FakeRedisCellClient: unsupported eval script`)
+  }
+
+  async #redeliverSentRequest(keys: string[], argv: string[]): Promise<number | string> {
+    const [reqKey, outbox] = keys
+    const [deliveryId, requestId, kind, payload, enqueuedAt] = argv
+    const hash = this.#hashes.get(reqKey!)
+    if (hash?.get('status') !== 'sent' || hash.get('ackAt')) return 0
+    let deliveries: Record<string, string> = {}
+    try {
+      deliveries = JSON.parse(hash.get('deliveries') || '{}') as Record<string, string>
+    } catch {
+      deliveries = {}
+    }
+    if (deliveries[deliveryId!]) return 1
+    const streamId = await this.xadd(outbox!, '*', {
+      deliveryId: deliveryId!,
+      requestId: requestId!,
+      kind: kind!,
+      payload: payload!,
+      enqueuedAt: enqueuedAt!,
+    })
+    deliveries[deliveryId!] = streamId
+    hash.set('deliveries', JSON.stringify(deliveries))
+    return streamId
   }
 
   async #reconcileStaleSocketPresence(

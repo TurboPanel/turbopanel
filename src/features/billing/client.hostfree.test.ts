@@ -4,7 +4,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
-import type { BillingConfig } from './config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from './config.ts'
 import { createStripeClient, STRIPE_LIST_PAGE_SIZE, type StripeFetch } from './client.ts'
 import { StripeApiError } from './errors.ts'
 
@@ -19,7 +19,7 @@ const test = Deno.test.bind(Deno)
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_abc',
   webhookSigningSecret: 'whsec_abc',
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string | null }
@@ -66,7 +66,7 @@ test('every call carries Authorization, Stripe-Version and the form content type
   await client.del('/v1/customers/cus_1')
   for (const call of double.calls) {
     assertEquals(call.headers['authorization'], 'Bearer sk_test_abc')
-    assertEquals(call.headers['stripe-version'], '2026-09-30.endive')
+    assertEquals(call.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
     assertEquals(call.headers['content-type'], 'application/x-www-form-urlencoded')
   }
   assertEquals(

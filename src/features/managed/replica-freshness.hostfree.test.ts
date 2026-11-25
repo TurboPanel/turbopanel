@@ -1,6 +1,10 @@
 import { assertEquals } from '@std/assert'
 import { type ManagedMemberRow, serializeManagedMemberForDisplay } from './members.ts'
-import { ageReplicationHealth } from './replica-freshness.ts'
+import {
+  ageReplicationHealth,
+  REPLICA_DISPLAY_REFRESH_MS,
+  REPLICA_DISPLAY_STALE_MS,
+} from './replica-freshness.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees the tests (see ha-recovery.hostfree.test.ts). */
 const test = Deno.test.bind(Deno)
@@ -90,5 +94,42 @@ test('the panel view ages a replica but leaves the primary alone', () => {
   assertEquals(
     serializeManagedMemberForDisplay(row('primary', old), null, NOW_MS).replication?.state,
     'streaming'
+  )
+})
+
+test('a pushed reading stays fresh across its five minute refresh, a probe reading does not', () => {
+  assertEquals(REPLICA_DISPLAY_STALE_MS > REPLICA_DISPLAY_REFRESH_MS, true)
+  const row = (metadata: Record<string, unknown>): ManagedMemberRow =>
+    ({
+      id: 'replica-1',
+      managedId: 'managed-1',
+      serverId: 'server-1',
+      role: 'replica',
+      replicaClass: 'failover',
+      readEligible: true,
+      ordinal: 2,
+      replicationTransport: null,
+      privatePort: null,
+      status: 'ready',
+      metadata,
+      options: null,
+      createdAt: iso(0),
+      updatedAt: iso(0),
+    }) as ManagedMemberRow
+  const measuredOld = { state: 'streaming', observedAt: iso(-3_600_000) }
+  const pushed = (ageMs: number) => ({
+    replication: measuredOld,
+    replicationDisplay: { state: 'streaming', observedAt: iso(-ageMs) },
+  })
+  const stateOf = (metadata: Record<string, unknown>) =>
+    serializeManagedMemberForDisplay(row(metadata), null, NOW_MS).replication?.state
+  // Just before the next refresh would land: still shown as streaming.
+  assertEquals(stateOf(pushed(REPLICA_DISPLAY_REFRESH_MS + 30_000)), 'streaming')
+  // Nothing has refreshed it for twice the interval: unknown.
+  assertEquals(stateOf(pushed(REPLICA_DISPLAY_STALE_MS + 1000)), 'unknown')
+  // A probe reading of the same age keeps the 120 s window.
+  assertEquals(
+    stateOf({ replication: { state: 'streaming', observedAt: iso(-REPLICA_DISPLAY_REFRESH_MS) } }),
+    'unknown'
   )
 })

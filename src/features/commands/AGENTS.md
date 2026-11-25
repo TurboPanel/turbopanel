@@ -113,8 +113,7 @@ The daemon execution payload is **not** a `command` column. It lives in the
    `expires_at = now + COMMAND_DISPATCH_FAILURE_RETENTION_MS` (24h) for
    debugging. Cleanup is best effort and never fails the transition.
 4. Expired rows are removed by `sweepExpiredCommandDispatch` on the **shared**
-   maintenance tick (Workers offline-sweep cron; Deno `DAEMON_CELL_MAINTAIN_MS`
-   timer), bounded by `COMMAND_DISPATCH_SWEEP_LIMIT` and reusing the already-open
+   maintenance tick (Workers offline-sweep cron; the Deno job tick), bounded by `COMMAND_DISPATCH_SWEEP_LIMIT` and reusing the already-open
    db — no new timer, no second connection.
 
 `getCommandDispatchPayload` is the only sanctioned read of the payload; command
@@ -178,6 +177,17 @@ in the execution-log store — there is no Postgres column for them. See
   firewall confirm must arrive before the server's own deadline or the server
   undoes the new rules, so it can never queue behind a backup. Only add a type
   that is short and safe beside any other command.
+- **Two lanes per server.** `BACKGROUND_COMMAND_TYPES` (fabric, TLS trust
+  and backup-schedule reconciles) wait only for other such reconciles
+  of the same server, one at a time; every other command waits only for the
+  others. They never hold up a user's command and the other way round. The
+  split covers only reconciles that do not race a failover or a deploy:
+  `managed.ingress.reconcile` (rewrites the ProxySQL server list without the
+  lock failover drain/undrain use), `managed.ha.reconcile` (restarts or stops
+  Orchestrator), `system.reconcile` (ProxySQL, Orchestrator, hosting ingress)
+  `server.principals.reconcile` (accounts and folders a deploy uses) and
+  `server.firewall.reconcile` (rewrites the managed firewall chain a managed
+  apply also edits, with no daemon lock) stay in the user lane with `managed.ha.failover` and `environment.deploy`.
 - **Passing failures wait, then fail.** A transient error (`isTransientError`)
   puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
   (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. A deploy
@@ -225,7 +235,7 @@ in the execution-log store — there is no Postgres column for them. See
   Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. A
   dead-lettered message is never acked: it logs `command.permanent_failure`
   and is `retry()`d until `max_retries` routes it to the `dead_letter_queue`
-  (the DLQ must exist: `wrangler queues create <name>-dlq`). Retries and busy
+  (the DLQ must exist: `wrangler queues create <name>-dlq`). The `-dlq` queue has its own consumer (`features/queues/dead-letter-consumer.ts`, wired per environment in `wrangler.jsonc`): it writes a redacted `queue.dead_letter` audit row (queue, message id, command id, server id, type, attempts; never the body), acks, and raises the `queue.dead_lettered` notice to administrators on the first dead letter of a day and at the tenth. A redelivered message adds nothing. Dead letters are never replayed from the queue; re-issue the command through the API. Retries and busy
   waits are new delayed messages, not `retry()`, so they never use up
   `max_retries`.
 - **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology).
@@ -242,7 +252,7 @@ in the execution-log store — there is no Postgres column for them. See
   (30 tries a second apart) does not stop the consumer either: start returns and
   the same loop keeps trying in the background, so a slow broker start never
   leaves the control plane accepting commands that nothing runs. The mailer
-  consumer (`lib/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
+  consumer (`features/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
   The producers (`platform/deno/commands/deno-amqp-queue.ts` and the email one)
   publish through `platform/deno/amqp-confirm-publisher.ts`, which applies the
   same listener rule: a lost connection or channel only drops the session, and
@@ -338,12 +348,12 @@ checkout changed). Co-located is skipped on all paths.
 
 ### Instance Cloudflare tunnel
 
-`POST /api/developer/v1/instance/tunnel-token`
-(`src/developer/tunnel-routes.ts`) sends a `tunnel-token` WS message to the
+`POST /api/admin/v1/instance/tunnel-token`
+(`src/platform/deno/ingress/admin-routes.ts`, body handled by
+`src/developer/tunnel-token-handler.ts`) sends a `tunnel-token` WS message to the
 co-located daemon, which writes `cloudflared/tunnels/instance.token` and
 (re)starts cloudflared. External remote daemons then reach this instance via the
-tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section
-(empty token tears it down).
+tunnel → Caddy → socket. An empty token tears it down.
 
 Correlated outbound work uses `createRequestAndWait` / `waitForRequest` (see
 **Enqueue-then-poll request contract** above) for dev-sync, tunnel-token,
@@ -354,7 +364,7 @@ public-urls apply, and managed logs (`managed-logs-request` /
 
 **Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno
 only) sends a `public-urls-update` WS message to the co-located daemon with the
-current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
+current hostname entries. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
 **`/etc/turbopanel/instance/runtime.env`** — never the checkout (a derived
 copy for the `instance-certs` role only; the self-hosted control plane never
 reads it back as a hostname source), re-runs the
@@ -373,7 +383,7 @@ sequenceDiagram
     UI->>Instance: POST /api/admin/v1/instance/public-urls/apply
     Instance->>Instance: setPublicUrls(db, urls)
     Instance->>Cell: enqueue public-urls-update envelope
-    Cell->>Daemon: WS: { type: "public-urls-update", urls }
+    Cell->>Daemon: WS: { type: "public-urls-update", hostnames }
     Daemon->>Daemon: write runtime.env, run instance-certs, reload caddy
     Daemon->>Cell: WS: { type: "public-urls-update-result", ok }
     Cell->>Instance: PendingRequestRecord { status: "done" }
@@ -439,12 +449,19 @@ longer `sent` or already has `acked_at`; the database opens only when the cell
 holds a candidate; `dispatching` is left alone because a consumer may be about
 to write it.
 
-Why an allowlist: a daemon that restarted since it received a frame cannot
-list it in its first hello (its journal is read after attach) and has
+Why an allowlist: a hello without `commandState` (or with `complete: false`)
+cannot say what the daemon never received, and a daemon that restarted has
 forgotten its seen ids, so a resend could run a deploy, destroy, rollback or
 rotation twice. Those types stay on their current paths (the deploy lane grace
-and waiter, the 45 s ack deadline on Workers). Widening the allowlist needs a
-daemon feature that reports journal ids, or a process start id, in the hello.
+and waiter, the 45 s ack deadline on Workers) unless the hello is complete.
+
+With `command-recovery-v2` the daemon sends `hello.commandState`
+(`processStartId`, `known`, `complete`) on every hello, never on a heartbeat.
+When `complete` is true, a `sent`, unacked command whose id is not in `known`
+was never started by that daemon, so it is sent again whatever its type, with
+the same guards as above (non-terminal row, younger than the 7-day unconfirmed
+retention, not written after this connection attached). When `complete` is
+false or the field is absent, the allowlist applies.
 
 ### A deploy survives a lost link or a restart (`command-recovery-v1`)
 
@@ -505,8 +522,6 @@ and `haltRollout` for batches still waiting.
   `deployment` row `failed` with `metadata.cancelled` (its `outcome` check allows
   no new value). `applied_generation` is untouched: the previous release is the
   live one, so `needsRedeploy` stays true.
-- **Older daemons** cannot be asked: a running deploy on a daemon without
-  `deploy-cancel-v1` answers **409** `cancel_unsupported` before anything changes.
 - **No step-up**: `step-up-actions.ts` leaves out actions a re-deploy fully
   reverses. The cancel is audited (`deployment.cancel`).
 
@@ -568,5 +583,5 @@ placement) still answer 2xx — a retry would find them unchanged.
 (`src/features/webhook-delivery/webhook-delivery-records.ts`) before any side effect runs, so a
 redelivery or manual replay answers `204` instead of enqueuing a second deploy.
 Rows are pruned after `WEBHOOK_DELIVERY_RETENTION_MS` by the same maintenance
-sweeps that drop expired `dispatch` payloads — the Deno process timer in
+sweeps that drop expired `dispatch` payloads — the Deno job tick in
 `src/platform/deno/server.ts` and the Workers cron in `src/daemon/cell/offline-sweep.ts`.

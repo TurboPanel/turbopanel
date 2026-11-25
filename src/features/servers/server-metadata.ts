@@ -15,6 +15,7 @@ import {
   parseSshPort,
 } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import { type BuildLimitSettings, parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import {
   type ManagedExternalAccess,
   parseManagedExternalAccess,
@@ -373,6 +374,19 @@ export type ServerMetadata = {
    * hosting path, drivetemp opt-in, generation). jsonb, so no migration.
    */
   hardwareProfile?: ServerHardwareProfile
+  /**
+   * What the daemon reports about the client-certificate check on the tunnel
+   * peer hop (`require` asked for, `verify` in force when `downgraded`). A
+   * report, written from the tunnel status and never part of the table hash.
+   * jsonb, so no migration.
+   */
+  tunnelPeerHop?: {
+    clientAuth: 'verify' | 'require'
+    downgraded: boolean
+    reminted?: boolean
+    /** When the daemon last reported it (ISO 8601). */
+    reportedAt?: string
+  }
 }
 
 /**
@@ -381,6 +395,11 @@ export type ServerMetadata = {
  * when both are present.
  */
 export type ServerOptions = {
+  /**
+   * The most cores and memory one build on this server may use. Part of the
+   * smallest-wins resolution in `../deploy/build-limits.ts`.
+   */
+  buildLimits?: BuildLimitSettings
   /**
    * Cloudflare `locationHint` for the daemon cell (e.g. `"wnam"`, `"eeur"`).
    * Takes precedence over `server.metadata.cell.locationHint` when set.
@@ -413,6 +432,27 @@ export type ServerOptions = {
    * organization's setting, which is off unless it says otherwise.
    */
   sendViaHeader?: boolean
+  /**
+   * Allow Compose projects deployed to this server to mount SMB network shares
+   * (top-level volumes with a `cifs` or `smb3` driver type). Off when omitted.
+   * There is no organization setting: the owner decides per server.
+   */
+  networkShares?: boolean
+  /**
+   * When `networkShares` was last turned on (ISO time), set by the control
+   * plane and never by a request. An automated deploy runs only on an approval
+   * recorded after this, so turning the setting off and on again voids the
+   * approvals made before.
+   */
+  networkSharesSince?: string
+  /**
+   * Web terminal settings. `container` allows terminals inside tenant
+   * containers on this server. Off when omitted, and off always wins: it is
+   * checked before any permission, for a platform admin too. It changes only
+   * through `PUT /servers/:id/terminal`, never through the generic options
+   * patch, because turning it off also ends every open session.
+   */
+  terminal?: { container?: boolean }
   /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
@@ -842,17 +882,6 @@ export function osColumnsFromMetadata(os: ServerOsMetadata): ServerOsColumns {
   }
 }
 
-/** Dedicated columns first; legacy `metadata.os` when columns are unset. */
-export function resolveServerOsForRead(
-  row: ServerOsColumns,
-  metadata: unknown
-): ServerOsMetadata | undefined {
-  return (
-    osMetadataFromColumns(row) ??
-    parseServerOsMetadata(isRecord(metadata) ? metadata.os : undefined)
-  )
-}
-
 /** Compose the API `os` object from dedicated columns. */
 export function osMetadataFromColumns(row: ServerOsColumns): ServerOsMetadata | undefined {
   const os: ServerOsMetadata = {}
@@ -1241,6 +1270,8 @@ export type ServerPhpPatchSite = {
   series: string
   version?: string
   outdated?: true
+  /** The site's PHP runs in the shared php-fpm master, not a per-site runtime (daemon 0.1.19+). */
+  shared?: true
 }
 
 export type ServerPhpRestartError = {
@@ -1315,7 +1346,7 @@ function parsePhpPatchVersions(value: unknown): Record<string, string> {
 
 function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
   if (!isRecord(raw)) return null
-  const { environmentId, composeServiceName, series, version, outdated } = raw
+  const { environmentId, composeServiceName, series, version, outdated, shared } = raw
   if (
     typeof environmentId !== 'string' ||
     !UUID_TOKEN.test(environmentId) ||
@@ -1332,6 +1363,7 @@ function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
     series,
     ...(typeof version === 'string' && PHP_PATCH_VERSION.test(version) ? { version } : {}),
     ...(outdated === true ? { outdated: true as const } : {}),
+    ...(shared === true ? { shared: true as const } : {}),
   }
 }
 
@@ -2039,6 +2071,16 @@ function assignWebServerSettings(options: ServerOptions, value: Record<string, u
   if (hide !== undefined) options.hideWebServerNames = hide
   const via = parseSendViaHeader(value.sendViaHeader)
   if (via !== undefined) options.sendViaHeader = via
+  if (typeof value.networkShares === 'boolean') options.networkShares = value.networkShares
+  if (
+    typeof value.networkSharesSince === 'string' &&
+    !Number.isNaN(Date.parse(value.networkSharesSince))
+  ) {
+    options.networkSharesSince = value.networkSharesSince
+  }
+  if (isRecord(value.terminal) && typeof value.terminal.container === 'boolean') {
+    options.terminal = { container: value.terminal.container }
+  }
 }
 
 /** Parse operator-controlled `server.options` jsonb. */
@@ -2060,6 +2102,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
   assignWebServerSettings(options, value)
+  assignServerBuildLimits(options, value.buildLimits)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
@@ -2076,6 +2119,11 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   }
   assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignServerBuildLimits(options: ServerOptions, value: unknown): void {
+  const buildLimits = parseBuildLimitSettings(value)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
 }
 
 function assignTunnelCarry(options: ServerOptions, value: unknown): void {

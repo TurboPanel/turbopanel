@@ -29,8 +29,13 @@ export const CLOUDFLARE_PERMISSIONS = {
   certificates: 'Zone · SSL and Certificates · Edit',
 } as const
 
-/** What a connector is told to reach: the web server on the same machine. */
-const LOCAL_ORIGIN = 'https://localhost'
+/**
+ * What a connector is told to reach: the web server on the same machine. The
+ * IPv4 loopback is named on purpose: "localhost" can resolve to ::1 first, and
+ * a site bound to one address listens on 127.0.0.1 only, so the connector
+ * would land on the catch-all server instead of the site.
+ */
+const LOCAL_ORIGIN = 'https://127.0.0.1'
 
 function requireAccount(accountId: string | null): string {
   if (!accountId) throw new TypeError('A Cloudflare account id is required')
@@ -280,8 +285,9 @@ export function parseExpiry(value: string): string {
 
 export function buildIngress(
   hostnames: readonly string[],
-  verifyOrigin = false
+  verifiedNames: readonly string[] = []
 ): CloudflareIngressRule[] {
+  const verified = new Set(verifiedNames.map((n) => n.trim().toLowerCase()))
   const seen = new Set<string>()
   const rules: CloudflareIngressRule[] = []
   for (const raw of hostnames) {
@@ -294,7 +300,7 @@ export function buildIngress(
       originRequest: {
         httpHostHeader: hostname,
         originServerName: hostname,
-        noTLSVerify: !verifyOrigin,
+        noTLSVerify: !verified.has(hostname),
       },
     })
   }
@@ -464,11 +470,19 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       await client(token).deleteTunnelConnections(requireAccount(input.accountId), input.externalId)
     },
 
+    async ingressFingerprint(input) {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(buildIngress(input.hostnames, input.verifiedNames))
+      )
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+      return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')
+    },
+
     async setRoutes(token, input) {
       await client(token).putConfiguration(
         requireAccount(input.accountId),
         input.externalId,
-        buildIngress(input.hostnames, input.verifyOrigin)
+        buildIngress(input.hostnames, input.verifiedNames)
       )
     },
 

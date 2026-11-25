@@ -62,7 +62,7 @@ test('serializeCommandRecord maps lifecycle columns and never exposes payload', 
   assertEquals(record.context, {
     environmentId: '00000000-0000-4000-8000-0000000000ee',
   })
-  assertEquals(record.error, null)
+  assertEquals(record.errorMessage, null)
   assertEquals(record.errorCode, null)
   assertEquals(record.attempts, 1)
   assertEquals(record.queuedAt, '2020-01-01T00:00:00.000Z')
@@ -132,7 +132,7 @@ test('serializeCommandRecord defaults missing lifecycle columns to nulls', () =>
   assertEquals(record.status, 'queued')
   assertEquals(record.result, null)
   assertEquals(record.context, null)
-  assertEquals(record.error, null)
+  assertEquals(record.errorMessage, null)
   assertEquals(record.queuedAt, null)
   assertEquals(record.expiresAt, null)
 })
@@ -326,7 +326,7 @@ test('transitionCommand stores terminal errors in error columns', async () => {
       errorCode: 'daemon_offline',
     })
     assertEquals(failed?.status, 'failed')
-    assertEquals(failed?.error, 'Daemon not connected')
+    assertEquals(failed?.errorMessage, 'Daemon not connected')
     assertEquals(failed?.errorMessage, 'Daemon not connected')
     assertEquals(failed?.errorCode, 'daemon_offline')
     assertEquals(failed?.finishedAt !== null, true)
@@ -387,13 +387,17 @@ test('cancelNonTerminalCommand cancels a live command and leaves a finished one'
     await transitionCommand(db, finished.id, { status: 'succeeded' })
 
     assertEquals(
-      await cancelNonTerminalCommand(db, live.id, { error: 'Superseded by a follow-primary' }),
+      await cancelNonTerminalCommand(db, live.id, {
+        error: 'Superseded by a follow-primary',
+      }),
       true
     )
     assertEquals((await getCommandRecord(db, live.id))?.status, 'cancelled')
 
     assertEquals(
-      await cancelNonTerminalCommand(db, finished.id, { error: 'Superseded by a follow-primary' }),
+      await cancelNonTerminalCommand(db, finished.id, {
+        error: 'Superseded by a follow-primary',
+      }),
       false
     )
     assertEquals((await getCommandRecord(db, finished.id))?.status, 'succeeded')

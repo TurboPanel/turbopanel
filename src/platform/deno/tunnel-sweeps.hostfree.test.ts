@@ -32,6 +32,7 @@ test('the tunnel sweep list holds every hosted tunnel sweep, in order', () => {
     TUNNEL_SWEEPS.map((sweep) => sweep.failureLabel),
     [
       'tunnel-routes-sweep-failed',
+      'tunnel-verified-names-sweep-failed',
       'tunnel-connectors-sweep-failed',
       'tunnel-run-token-rotation-failed',
       'tunnel-removal-sweep-failed',
@@ -59,15 +60,17 @@ test('the self-hosted run calls every tunnel sweep, and a failing one does not s
   )
 })
 
-test('the self-hosted minute timer runs the tunnel sweeps', () => {
+test('the self-hosted tick runs the tunnel sweeps and delivers peer leaves with their table', () => {
   const server = readSource('./server.ts')
-  const timer = server.slice(
-    server.indexOf('const runCertificateSweeps = async'),
-    server.indexOf('}, LEAF_RENEWAL_SWEEP_INTERVAL_MS)')
+  const start = server.indexOf("    'leaf-renewal': {")
+  const end = server.indexOf("    'ingress-tick': {", start)
+  assert(start >= 0 && end > start, 'the certificate jobs are not where this test looks for them')
+  const jobs = server.slice(start, end)
+  assert(
+    jobs.includes('runSelfHostedTunnelSweeps(certificateDb(ctx)'),
+    'the tick must run the tunnel sweeps'
   )
-  assert(timer.length > 0, 'the minute timer is not where this test looks for it')
-  assert(timer.includes('runSelfHostedTunnelSweeps(tickDb'), 'the timer must run the tunnel sweeps')
-  assert(timer.includes('deliverPeerLeaf: peerLeafDelivery('), 'peer leaves must ride their table')
+  assert(jobs.includes('deliverPeerLeaf: peerLeafDelivery('), 'peer leaves must ride their table')
 })
 
 test('no single tunnel sweep is wired into one scheduler only', () => {
@@ -82,12 +85,15 @@ test('no single tunnel sweep is wired into one scheduler only', () => {
 test('every sweep the hosted cron runs on its queue also runs on a self-hosted control plane', () => {
   const offline = readSource('../../daemon/cell/offline-sweep.ts')
   const start = offline.indexOf('async function runQueuedCronSweeps(')
-  const end = offline.indexOf('\n}\n', start)
+  const end = offline.indexOf('\nfunction capDbTimeout(', start)
   assert(start >= 0 && end > start, 'runQueuedCronSweeps is not where this test looks for it')
+  // The queued sweeps and the helpers split out of it, up to the next function.
+  const region = offline.slice(start, end)
+  const helpers = new Set([...region.matchAll(/function (run\w+)\(/g)].map((match) => match[1]))
   const hosted = new Set(
-    [...offline.slice(start, end).matchAll(/\b(run\w+)\(/g)]
+    [...region.matchAll(/\b(run\w+)\(/g)]
       .map((match) => match[1])
-      .filter((name) => name !== 'runIsolatedSweep' && name !== 'runQueuedCronSweeps')
+      .filter((name) => name !== 'runIsolatedSweep' && !helpers.has(name))
   )
   // The same work under the name the self-hosted side calls it by.
   const selfHostedName: Record<string, string> = { runTunnelSweeps: 'runSelfHostedTunnelSweeps' }

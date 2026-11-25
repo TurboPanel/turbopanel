@@ -12,7 +12,7 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import {
   deleteSystemEnvironmentSubtree,
   ensureManagedHaHierarchy,
@@ -175,7 +175,10 @@ test('hierarchy ensure reuses an install-created System workspace', async () => 
       .select({ id: workspace.id })
       .from(workspace)
       .where(
-        and(eq(workspace.organizationId, organizationId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
+        and(
+          eq(workspace.organizationId, organizationId),
+          eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+        )
       )
     assertEquals(systemRows.length, 1)
     assertEquals(systemRows[0]?.id, installWorkspaceId)
@@ -223,7 +226,10 @@ test('concurrent ensureSystemHierarchy creates exact hierarchy row counts', asyn
       .select({ id: workspace.id })
       .from(workspace)
       .where(
-        and(eq(workspace.organizationId, organizationId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
+        and(
+          eq(workspace.organizationId, organizationId),
+          eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+        )
       )
     assertEquals(workspaceRows.length, 1)
 
@@ -362,7 +368,10 @@ test('ensureSystemHierarchy and ensureSelfHostSystemHierarchy coexist for the sa
       .select({ id: workspace.id })
       .from(workspace)
       .where(
-        and(eq(workspace.organizationId, organizationId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
+        and(
+          eq(workspace.organizationId, organizationId),
+          eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+        )
       )
     assertEquals(workspaceRows.length, 1)
 
@@ -386,7 +395,10 @@ test('concurrent ensureSelfHostSystemHierarchy creates exact hierarchy row count
       .select({ id: workspace.id })
       .from(workspace)
       .where(
-        and(eq(workspace.organizationId, organizationId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
+        and(
+          eq(workspace.organizationId, organizationId),
+          eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+        )
       )
     assertEquals(workspaceRows.length, 1)
 

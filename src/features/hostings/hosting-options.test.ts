@@ -169,33 +169,14 @@ test('parseHostingOptions keeps www only for a mode other than off', () => {
   assertEquals(parseHostingOptions({ www: true }), {})
 })
 
-test('readHostingWwwMode reads the mode and maps the old wwwRedirect flag', () => {
+test('readHostingWwwMode reads the mode', () => {
   assertEquals(readHostingWwwMode(null), 'off')
   assertEquals(readHostingWwwMode([]), 'off')
   assertEquals(readHostingWwwMode({}), 'off')
   assertEquals(readHostingWwwMode({ www: 'both' }), 'both')
   assertEquals(readHostingWwwMode({ www: 'junk' }), 'off')
-  assertEquals(readHostingWwwMode({ www: 'both', wwwRedirect: true }), 'both')
-  assertEquals(readHostingWwwMode({ wwwRedirect: false, hostnames: ['example.com'] }), 'off')
-  assertEquals(readHostingWwwMode({ wwwRedirect: 'yes', hostnames: ['example.com'] }), 'off')
-  assertEquals(readHostingWwwMode({ wwwRedirect: true }), 'www-to-root')
-  assertEquals(readHostingWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'www-to-root')
-  assertEquals(
-    readHostingWwwMode({ wwwRedirect: true, hostnames: ['www.example.com', 'shop.example.com'] }),
-    'root-to-www'
-  )
-})
-
-test('parseHostingOptions turns the old wwwRedirect flag into a www mode', () => {
-  assertEquals(parseHostingOptions({ wwwRedirect: true, hostnames: ['example.com'] }), {
-    hostnames: ['example.com'],
-    www: 'www-to-root',
-  })
-  assertEquals(parseHostingOptions({ wwwRedirect: true, hostnames: ['www.example.com'] }), {
-    hostnames: ['www.example.com'],
-    www: 'root-to-www',
-  })
-  assertEquals(parseHostingOptions({ wwwRedirect: false }), {})
+  // The old boolean key is no longer read.
+  assertEquals(readHostingWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'off')
 })
 
 test('parseHostingOptions drops the PHP ini override names from web.env', () => {

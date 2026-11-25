@@ -1,3 +1,5 @@
+import type { EnvironmentDeployHosting } from './schemas.ts'
+
 export const HOSTNAME_RE =
   /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/
 
@@ -143,4 +145,30 @@ export function foldHostname(name: string): string {
   } catch {
     return lowered
   }
+}
+
+/**
+ * The certificate settings one name of a hosting uses: its own `nameTls` entry
+ * when it has one; else, for a `www` redirect name, the entry of the served name
+ * it sends visitors to; else the hosting level. A hosting with no `nameTls`
+ * always answers with its own `tlsId` and `tlsMode`.
+ */
+export function hostingTlsForName(
+  hosting: Pick<EnvironmentDeployHosting, 'hostnames' | 'www' | 'tlsId' | 'tlsMode' | 'nameTls'>,
+  hostname: string
+): {
+  tlsId: string | null | undefined
+  tlsMode: EnvironmentDeployHosting['tlsMode']
+} {
+  const entries = hosting.nameTls
+  if (entries !== undefined && entries.length > 0) {
+    const target = hostingWwwRedirects(hosting).find((redirect) => redirect.from === hostname)?.to
+    const entry =
+      entries.find((item) => item.hostname === hostname) ??
+      (target === undefined ? undefined : entries.find((item) => item.hostname === target))
+    if (entry !== undefined) {
+      return { tlsId: entry.tlsId ?? null, tlsMode: entry.tlsMode }
+    }
+  }
+  return { tlsId: hosting.tlsId, tlsMode: hosting.tlsMode }
 }

@@ -12,7 +12,7 @@ import type { Db } from '../../db/connection.ts'
 import { license, organization, server, tier } from '../../db/schema.ts'
 import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
 import type { MetricsDeploymentKind } from '../../contracts/capability-plan.ts'
-import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { getLatestServerTopologies } from '../servers/server-topology-records.ts'
 import type { TopologyOverrides, TopologySnapshot } from '../../contracts/topology-types.ts'
 import {
   discoveredDeviceIds,
@@ -324,7 +324,7 @@ export async function loadTierPlacementsForServers(
 
   const [joins, topologyByServer] = await Promise.all([
     loadServerLicenseTierJoins(db, serverIds),
-    getLatestTopologyGenerations(db, serverIds),
+    getLatestServerTopologies(db, serverIds),
   ])
 
   for (const serverId of serverIds) {

@@ -85,7 +85,9 @@ export function blockingReason(
     return removalNote ? `${base}; the server could not remove it yet: ${removalNote}` : base
   }
   if (state === 'orphan') {
-    return `no service or volume owns this folder on ${where}`
+    const base = `no service or volume owns this folder on ${where}`
+    // Why it matters now (an account waits for it), when the panel recorded that.
+    return removalNote ? `${base}; ${removalNote}` : base
   }
   return null
 }

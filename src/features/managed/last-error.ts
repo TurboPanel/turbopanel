@@ -15,7 +15,7 @@ const MANAGED_INGRESS_FAILURE_TYPE = 'managed.ingress.reconcile'
 export type ManagedFailureCommand = {
   type: string
   status: string
-  error: string | null
+  errorMessage: string | null
   /** Non-secret identifier bag from the command row (`managedId`, …). */
   context: unknown
   createdAt?: string
@@ -48,7 +48,7 @@ function isFailedCommand(row: ManagedFailureCommand): boolean {
 }
 
 function hasCommandError(row: ManagedFailureCommand): boolean {
-  return typeof row.error === 'string' && row.error.trim().length > 0
+  return typeof row.errorMessage === 'string' && row.errorMessage.trim().length > 0
 }
 
 /**
@@ -58,25 +58,24 @@ function hasCommandError(row: ManagedFailureCommand): boolean {
  */
 export function pickManagedFailureMessage(
   commands: readonly ManagedFailureCommand[],
-  managedId: string,
+  managedId: string
 ): string | null {
   const newestFirst = [...commands].sort((a, b) =>
     (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
   )
-  const engine = newestFirst.find((row) =>
-    isFailedCommand(row) &&
-    hasCommandError(row) &&
-    MANAGED_ENGINE_FAILURE_TYPES.has(row.type) &&
-    commandManagedId(row.context) === managedId
+  const engine = newestFirst.find(
+    (row) =>
+      isFailedCommand(row) &&
+      hasCommandError(row) &&
+      MANAGED_ENGINE_FAILURE_TYPES.has(row.type) &&
+      commandManagedId(row.context) === managedId
   )
-  const latestIngress = newestFirst.find((row) =>
-    row.type === MANAGED_INGRESS_FAILURE_TYPE
-  )
+  const latestIngress = newestFirst.find((row) => row.type === MANAGED_INGRESS_FAILURE_TYPE)
   const ingressError =
     latestIngress && isFailedCommand(latestIngress) && hasCommandError(latestIngress)
-      ? latestIngress.error
+      ? latestIngress.errorMessage
       : null
-  return mergeManagedFailureMessages(engine?.error, ingressError)
+  return mergeManagedFailureMessages(engine?.errorMessage, ingressError)
 }
 
 export async function loadManagedStatusError(
@@ -86,20 +85,22 @@ export async function loadManagedStatusError(
     status: string | null
     residualError: string | null
     serverIds: readonly (string | null | undefined)[]
-  },
+  }
 ): Promise<string | null> {
   if (input.status !== 'failed') return null
-  const serverIds = [...new Set(
-    input.serverIds.filter((id): id is string => typeof id === 'string' && id.length > 0),
-  )].sort((a, b) => a.localeCompare(b))
+  const serverIds = [
+    ...new Set(
+      input.serverIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    ),
+  ].sort((a, b) => a.localeCompare(b))
   if (serverIds.length === 0) {
     return input.residualError
   }
   const lists = await Promise.all(
-    serverIds.map((serverId) => listServerCommands(db, { serverId, limit: 20 })),
+    serverIds.map((serverId) => listServerCommands(db, { serverId, limit: 20 }))
   )
   return mergeManagedFailureMessages(
     input.residualError,
-    pickManagedFailureMessage(lists.flat(), input.managedId),
+    pickManagedFailureMessage(lists.flat(), input.managedId)
   )
 }

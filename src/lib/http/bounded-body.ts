@@ -13,19 +13,17 @@
  */
 
 import type { Context } from 'hono'
+import { apiError } from './api-error.ts'
 
 /**
  * `Content-Length` fast-rejection. Returns a `413` `Response`, or `null` when
  * the header is absent or within budget. Cheaper than reading the stream, but
  * never sufficient on its own — the header is untrusted.
  */
-export function rejectIfContentLengthTooLarge(
-  c: Context,
-  maxBytes: number,
-): Response | null {
+export function rejectIfContentLengthTooLarge(c: Context, maxBytes: number): Response | null {
   const declaredLength = Number(c.req.header('content-length') ?? '')
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return c.json({ ok: false, error: 'request body too large' }, 413)
+    return apiError(c, 413, 'request_body_too_large', 'request body too large')
   }
   return null
 }
@@ -44,7 +42,7 @@ export function contentLengthExceeds(c: Context, maxBytes: number): boolean {
  */
 export async function readBodyWithByteLimit(
   c: Context,
-  maxBytes: number,
+  maxBytes: number
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false }> {
   const stream = c.req.raw.body
   if (!stream) {
@@ -84,7 +82,7 @@ export async function readBodyWithByteLimit(
  */
 export async function readBoundedBodyText(
   c: Context,
-  maxBytes: number,
+  maxBytes: number
 ): Promise<{ ok: true; text: string } | { ok: false; response: Response }> {
   const tooLarge = rejectIfContentLengthTooLarge(c, maxBytes)
   if (tooLarge) return { ok: false, response: tooLarge }
@@ -92,7 +90,7 @@ export async function readBoundedBodyText(
   if (!bodyRead.ok) {
     return {
       ok: false,
-      response: c.json({ ok: false, error: 'request body too large' }, 413),
+      response: apiError(c, 413, 'request_body_too_large', 'request body too large'),
     }
   }
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
@@ -105,25 +103,21 @@ export async function readBoundedBodyText(
  */
 export async function readBoundedBodyBytes(
   c: Context,
-  maxBytes: number,
+  maxBytes: number
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false }> {
   if (contentLengthExceeds(c, maxBytes)) return { ok: false }
   return await readBodyWithByteLimit(c, maxBytes)
 }
 
 export type BoundedJsonResult =
-  | { ok: true; body: unknown }
-  | { ok: false; reason: 'too-large' | 'malformed' }
+  { ok: true; body: unknown } | { ok: false; reason: 'too-large' | 'malformed' }
 
 /**
  * Bounded read + JSON parse in one step, for public auth-style surfaces that
  * must charge a rate-limit bucket on failure (see `client/authn/http.ts`).
  * Distinguishes "too large" from "malformed" so callers can answer 413 vs 400.
  */
-export async function readBoundedJson(
-  c: Context,
-  maxBytes: number,
-): Promise<BoundedJsonResult> {
+export async function readBoundedJson(c: Context, maxBytes: number): Promise<BoundedJsonResult> {
   if (contentLengthExceeds(c, maxBytes)) return { ok: false, reason: 'too-large' }
   const read = await readBodyWithByteLimit(c, maxBytes)
   if (!read.ok) return { ok: false, reason: 'too-large' }

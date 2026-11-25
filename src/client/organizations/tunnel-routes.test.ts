@@ -6,7 +6,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -33,18 +33,27 @@ import {
   secret,
   server,
   service,
+  tls,
   tunnel,
   user,
   workspace,
 } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { insertBadge, insertCarrier, sealToken } from '../../features/tunnels/records.ts'
-import { loadRoutingFacts } from '../../features/tunnels/route-facts.ts'
+import {
+  loadRoutingFacts,
+  loadServerAddresses,
+  loadUnroutedReasons,
+} from '../../features/tunnels/route-facts.ts'
 import { NO_CAPABILITIES } from '../../features/tunnels/vocabulary.ts'
-import { carryingServers } from '../../features/tunnels/lifecycle.ts'
+import { carryingServers, listTunnels } from '../../features/tunnels/lifecycle.ts'
+import { loadVerifiedNames } from '../../features/tunnels/verified-names.ts'
+import { runVerifiedNamesSweepTick } from '../../features/tunnels/verified-names-sweep.ts'
 import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
+import { syncTunnelRoutes } from '../../features/tunnels/route-sync.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { recordTunnelStatus } from '../../features/tunnels/status.ts'
 import { registerOrganizationTunnelRoutes } from './tunnel-routes.ts'
@@ -94,6 +103,8 @@ const provider = {
   nameReads: 0,
   /** The tunnel secrets sent to rotate a run token. */
   rotationSecrets: [] as string[],
+  /** The names of every origin certificate asked for. */
+  certificateRequests: [] as string[][],
 }
 
 /** A command queue for the tests that need one; most routes run without it. */
@@ -118,6 +129,16 @@ const fakeProvider: typeof fetch = async (input, init) => {
     if (provider.failRoutes) return refused(500, 'routes failed')
     provider.routeBodies.push(JSON.parse(String(init?.body)))
     return ok({})
+  }
+  if (path === '/certificates' && method === 'POST') {
+    const sent = JSON.parse(String(init?.body)) as { hostnames: string[] }
+    provider.certificateRequests.push(sent.hostnames)
+    const minted = await mintSelfSignedCertificate(sent.hostnames, { validDays: 365 })
+    return ok({
+      id: `cert-ext-${provider.certificateRequests.length}`,
+      certificate: minted.certificatePem,
+      expires_on: minted.parsed.notAfter.toISOString().slice(0, 19).replace('T', ' '),
+    })
   }
   if (path === '/zones') {
     const account = url.searchParams.get('account.id') ?? ACCOUNT
@@ -246,6 +267,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.nameRecordsLater = null
   provider.nameReads = 0
   provider.rotationSecrets = []
+  provider.certificateRequests = []
   testQueue = null
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -393,6 +415,7 @@ test('every tunnel route refuses a request without a session', async () => {
       ['GET', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['DELETE', `/organizations/${f.orgA}/tunnels/${id}/hostnames/${id}`],
+      ['PATCH', `/organizations/${f.orgA}/tunnels/${id}/hostnames/${id}`],
       ['PUT', `/organizations/${f.orgA}/servers/${id}/tunnel-carrying`],
     ]) {
       assertEquals((await call(f, method!, path!, null, {})).status, 401, `${method} ${path}`)
@@ -435,8 +458,6 @@ test('a tunnel is created at the provider, its run token is sealed and never ret
       warnings: string[]
     }
     assertEquals(shown.carryingServerIds.length, 2)
-    // The test servers run no daemon that advertises tunnel support.
-    assert(shown.warnings[0]!.includes('too old'))
     const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, shown.id))
     assertEquals(row!.externalId, 'tunnel-ext-1')
     assertEquals(row!.organizationId, row!.routingOrganizationId)
@@ -570,7 +591,7 @@ test('a hostname gets its route and its DNS name, and removing it takes both awa
     assertEquals(shown.status, 'live')
     assert(provider.calls.includes('POST /zones/zone-1/dns_records'))
     const sent = JSON.stringify(provider.routeBodies.at(-1))
-    assert(sent.includes('shop.example.com') && sent.includes('https://localhost'))
+    assert(sent.includes('shop.example.com') && sent.includes('https://127.0.0.1'))
 
     const dup = await call(
       f,
@@ -1020,6 +1041,166 @@ test('a bad hostname and an unknown tunnel are refused', async () => {
   })
 })
 
+test('server addresses carry datacenter and dedicated public addresses, never shared ones', async () => {
+  await withFixture(async (f) => {
+    const [one, two] = f.servers
+    await f.db.insert(ip).values(
+      [
+        [one, '192.0.2.21', 'dedicated'],
+        [one, '192.0.2.20', 'dedicated'],
+        [one, '192.0.2.99', 'shared'],
+        [two, '192.0.2.98', 'shared'],
+      ].map(([serverId, address, allocation]) => ({
+        organizationId: f.orgA,
+        serverId,
+        address,
+        allocation,
+        scope: 'public',
+      }))
+    )
+    const book = await loadServerAddresses(f.db, f.orgA, [one, two])
+    assertEquals(book.get(one), {
+      datacenters: { [f.datacenterId]: ['10.93.0.10'] },
+      public: ['192.0.2.20', '192.0.2.21'],
+    })
+    // A server with only a shared public address has no public address to use.
+    assertEquals(book.get(two), {
+      datacenters: { [f.datacenterId]: ['10.93.0.11'] },
+      public: [],
+    })
+    assertEquals(await loadServerAddresses(f.db, f.orgA, []), new Map())
+  })
+})
+
+test('a name whose site runs nowhere yet is reported unrouted with its reason', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    await call(f, 'POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`, f.managerCookie, {
+      hostname: 'shop.example.com',
+    })
+    const tunnel = (await listTunnels(f.db, f.orgA)).find((t) => t.id === id)
+    assert(tunnel)
+    // The site is not deployed anywhere yet.
+    const before = await loadUnroutedReasons(f.db, f.orgA, tunnel)
+    assertEquals(before.get('shop.example.com')?.includes('does not run on any server'), true)
+  })
+})
+
+test('the hostname list says in its routingNote why a name is not forwarded', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const listed = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie
+    )
+    assertEquals(listed.status, 200, listed.text)
+    const names = listed.body.hostnames as { hostname: string; routingNote: string | null }[]
+    assertEquals(names.length, 1)
+    assertEquals(names[0]!.hostname, 'shop.example.com')
+    // The site runs nowhere yet.
+    assert(names[0]!.routingNote?.includes('does not run on any server'))
+  })
+})
+
+test('the tunnel response reports the peer hop mode of carrying and site servers', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const site = await insertHosting(f, f.orgA, f.servers[2])
+    await f.db
+      .insert(hostname)
+      .values({ hostingId: site, routingOrganizationId: f.orgA, hostname: 'shop.example.com' })
+    const [svc] = await f.db
+      .select({ environmentId: service.environmentId })
+      .from(hosting)
+      .innerJoin(service, eq(service.id, hosting.serviceId))
+      .where(eq(hosting.id, site))
+    await f.db
+      .insert(deployment)
+      .values({ environmentId: svc!.environmentId, serverId: f.servers[2], status: 'applied' })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const reportedAt = '2026-11-17T10:00:00.000Z'
+    await f.db
+      .update(server)
+      .set({ metadata: { tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt } } })
+      .where(eq(server.id, f.servers[0]))
+
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const hops = (
+      shown.body.tunnel as {
+        peerHop: {
+          serverId: string
+          mode: string
+          downgraded: boolean
+          reportedAt: string | null
+        }[]
+      }
+    ).peerHop
+    const hop = (serverId: string) => hops.find((h) => h.serverId === serverId)
+    assertEquals(hop(f.servers[0]), {
+      serverId: f.servers[0],
+      mode: 'verify',
+      downgraded: true,
+      reportedAt,
+    })
+    // A server that never reported has no mode; the site-only server is listed too.
+    assertEquals(hop(f.servers[2]), {
+      serverId: f.servers[2],
+      mode: 'none',
+      downgraded: false,
+      reportedAt: null,
+    })
+  })
+})
+
+test('the tunnel response reports the status-port lock per carrying server, null when unknown', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const checkedAt = '2026-11-19T10:00:00.000Z'
+    await f.db
+      .update(server)
+      .set({ metadata: { tunnelStatusPorts: { locked: true, checkedAt } } })
+      .where(eq(server.id, f.servers[0]))
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const rows = (
+      shown.body.tunnel as {
+        statusPorts: {
+          serverId: string
+          locked: boolean | null
+          reason: string | null
+          checkedAt: string | null
+        }[]
+      }
+    ).statusPorts
+    const row = (serverId: string) => rows.find((r) => r.serverId === serverId)
+    assertEquals(row(f.servers[0]), {
+      serverId: f.servers[0],
+      locked: true,
+      reason: null,
+      checkedAt,
+    })
+    // A carrying server that never reported is unknown, not locked.
+    const other = rows.find((r) => r.serverId !== f.servers[0])
+    assertEquals(other?.locked, null)
+  })
+})
+
 test('the placement can be changed, and the route facts carry exact datacenter addresses', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)
@@ -1044,7 +1225,10 @@ test('the placement can be changed, and the route facts carry exact datacenter a
     assertEquals(facts.tunnels[0]!.doorways, [
       { hostname: 'shop.example.com', siteServerIds: [], isLocalOnly: true },
     ])
-    assertEquals(facts.addresses.get(f.servers[2]), ['10.93.0.12'])
+    assertEquals(facts.addresses.get(f.servers[2]), {
+      datacenters: { [f.datacenterId]: ['10.93.0.12'] },
+      public: [],
+    })
     const bad = await call(
       f,
       'PUT',
@@ -1098,7 +1282,11 @@ async function insertHosting(
 async function addCarrier(
   f: Fixture,
   account: string,
-  capabilities: { tunnels: boolean; dns: { id: string; name: string }[] }
+  capabilities: {
+    tunnels: boolean
+    dns: { id: string; name: string }[]
+    certificates?: { id: string; name: string }[]
+  }
 ): Promise<string> {
   const owner = await insertCarrier(f.db, {
     organizationId: f.orgA,
@@ -1128,6 +1316,45 @@ async function addCarrier(
   })
   return owner.id
 }
+
+test('adding a tunnel name that chose the origin certificate issues and pins it', async () => {
+  await withFixture(async (f) => {
+    // A second token of the organization holds certificate rights for the zone.
+    await addCarrier(f, 'c'.repeat(32), {
+      tunnels: false,
+      dns: [],
+      certificates: [{ id: 'zone-1', name: 'example.com' }],
+    })
+    const id = await makeTunnel(f)
+    const site = await insertHosting(f, f.orgA)
+    await f.db.insert(hostname).values({
+      hostingId: site,
+      routingOrganizationId: f.orgA,
+      hostname: 'origin.example.com',
+      certificate: 'cloudflare_origin',
+    })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'origin.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    assertEquals(provider.certificateRequests, [['origin.example.com']])
+    const [row] = await f.db
+      .select({ tlsId: hostname.tlsId })
+      .from(hostname)
+      .where(and(eq(hostname.hostingId, site), eq(hostname.hostname, 'origin.example.com')))
+    assert(row?.tlsId)
+    const [pinned] = await f.db.select().from(tls).where(eq(tls.id, row.tlsId))
+    assertEquals(pinned?.source, 'provider_origin')
+    f.cleanup.push(async () => {
+      await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.hostingId, site))
+      await f.db.delete(tls).where(eq(tls.organizationId, f.orgA))
+    })
+  })
+})
 
 test("another organization's manager cannot reach a tunnel or a hostname by id", async () => {
   await withFixture(async (f) => {
@@ -1314,6 +1541,21 @@ test('a hostname that fails to lose its DNS name stays, and the removal can be r
     // The route was rewritten first, so the name answers nothing while the DNS name is still there.
     const lastRoutes = JSON.stringify(provider.routeBodies.at(-1))
     assert(!lastRoutes.includes('shop.example.com'))
+    // The name is marked removing, so a sync during the removal does not route it again.
+    const [marked] = await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))
+    assertEquals(marked?.status, 'removing')
+    await f.db
+      .update(tunnel)
+      .set({ metadata: { routes: { verifiedNames: [], hostnames: ['shop.example.com'] } } })
+      .where(eq(tunnel.id, id))
+    const [tunnelRow] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
+    const synced = await syncTunnelRoutes(
+      f.db,
+      { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) },
+      tunnelRow!
+    )
+    assertEquals(synced, 'pushed')
+    assert(!JSON.stringify(provider.routeBodies.at(-1)).includes('shop.example.com'))
     provider.failDnsDelete = false
     const again = await call(
       f,
@@ -1323,6 +1565,36 @@ test('a hostname that fails to lose its DNS name stays, and the removal can be r
     )
     assertEquals(again.status, 200, again.text)
     assertEquals((await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))).length, 0)
+  })
+})
+
+test('a tunnel whose recorded ingress is missing or differs is written once, then left alone', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const deps = { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) }
+    const sync = async () => {
+      const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
+      return syncTunnelRoutes(f.db, deps, row!)
+    }
+    const setRoutes = (routes: Record<string, unknown>) =>
+      f.db.update(tunnel).set({ metadata: { routes } }).where(eq(tunnel.id, id))
+    const puts = () => provider.routeBodies.length
+
+    // A row written before the ingress was recorded: names match, hash missing.
+    await setRoutes({ verifiedNames: [], hostnames: [] })
+    const before = puts()
+    assertEquals(await sync(), 'pushed')
+    assertEquals(puts(), before + 1)
+    // Recorded now: the same ingress is not written again.
+    assertEquals(await sync(), 'unchanged')
+    assertEquals(puts(), before + 1)
+
+    // The origin (or any other part of the built ingress) changed since the last write.
+    await setRoutes({ verifiedNames: [], hostnames: [], ingress: 'stale-hash' })
+    assertEquals(await sync(), 'pushed')
+    assertEquals(puts(), before + 2)
+    assertEquals(await sync(), 'unchanged')
+    assertEquals(puts(), before + 2)
   })
 })
 
@@ -1373,7 +1645,7 @@ test("a name is linked to a site of the organization, and refused when the site 
   })
 })
 
-test('changing to a chosen placement clears the datacenter and warns about a daemon that is too old', async () => {
+test('changing to a chosen placement clears the datacenter', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f, {
       placement: 'all',
@@ -1391,20 +1663,8 @@ test('changing to a chosen placement clears the datacenter and warns about a dae
       }
     )
     assertEquals(moved.status, 200, moved.text)
-    const shown = moved.body.tunnel as { datacenterId: string | null; warnings: string[] }
+    const shown = moved.body.tunnel as { datacenterId: string | null }
     assertEquals(shown.datacenterId, null)
-    assert(shown.warnings.some((w) => w.includes('too old')))
-  })
-})
-
-test('the daemon warning shows on later loads of the list and of one tunnel, not only after a change', async () => {
-  await withFixture(async (f) => {
-    const id = await makeTunnel(f)
-    const listed = await call(f, 'GET', `/organizations/${f.orgA}/tunnels`, f.managerCookie)
-    const rows = listed.body.tunnels as { warnings: string[] }[]
-    assert(rows[0]!.warnings.some((w) => w.includes('too old')))
-    const one = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
-    assert((one.body.tunnel as { warnings: string[] }).warnings.some((w) => w.includes('too old')))
   })
 })
 
@@ -1486,5 +1746,342 @@ test('rotating a run token starts with a 202, is refused to others and audits wi
     const again = await call(f, 'POST', path, f.managerCookie, {})
     assertEquals(again.status, 409)
     assertEquals(again.body.error, 'rotation_in_progress')
+  })
+})
+
+/** A tunnel name linked to a site whose bind is set, for the reach tests. */
+async function reachFixture(f: Fixture, bind: string, name = 'reach.example.com') {
+  const id = await makeTunnel(f, { name: `Reach ${bind}` })
+  const site = await insertHosting(f, f.orgA, f.servers[2])
+  await f.db.update(hosting).set({ options: { bind } }).where(eq(hosting.id, site))
+  await f.db
+    .insert(hostname)
+    .values({ hostingId: site, routingOrganizationId: f.orgA, hostname: name })
+  const added = await call(
+    f,
+    'POST',
+    `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+    f.managerCookie,
+    { hostname: name }
+  )
+  assertEquals(added.status, 201, added.text)
+  const doorwayId = (added.body.hostname as { id: string }).id
+  return {
+    id,
+    site,
+    doorwayId,
+    path: `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+  }
+}
+
+test('a name on a datacenter site can also be reached directly, and closed again', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    await f.db
+      .update(hostname)
+      .set({ certificate: 'self_signed' })
+      .where(eq(hostname.hostingId, r.site))
+    const opened = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(opened.status, 200, opened.text)
+    assertEquals((opened.body.hostname as { isLocalOnly: boolean }).isLocalOnly, false)
+    assertEquals(opened.body.needsDeploy, true)
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+    assertEquals(row!.isLocalOnly, false)
+    const closed = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(closed.status, 200, closed.text)
+    assertEquals((closed.body.hostname as { isLocalOnly: boolean }).isLocalOnly, true)
+    const again = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(again.body.needsDeploy, false)
+  })
+})
+
+test('a name on a public site cannot be opened for direct visitors, and a local one is refused too', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'public')
+    for (const bind of ['public', 'local']) {
+      await f.db.update(hosting).set({ options: { bind } }).where(eq(hosting.id, r.site))
+      const res = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+      assertEquals(res.status, 409, res.text)
+      assertEquals(res.body.error, 'doorway_bind_not_datacenter')
+      const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+      assertEquals(row!.isLocalOnly, true)
+    }
+  })
+})
+
+test('the reach of a name needs a yes or no, a manager, and a tunnel of this organization', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const bad = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: 'no' })
+    assertEquals(bad.status, 400)
+    assertEquals(
+      (await call(f, 'PATCH', r.path, f.memberCookie, { isLocalOnly: false })).status,
+      403
+    )
+    const other = await call(f, 'PATCH', r.path, f.otherManagerCookie, { isLocalOnly: false })
+    assert(other.status === 403 || other.status === 404, `other org: ${other.status}`)
+    const missing = await call(
+      f,
+      'PATCH',
+      `/organizations/${f.orgA}/tunnels/${r.id}/hostnames/${crypto.randomUUID()}`,
+      f.managerCookie,
+      { isLocalOnly: false }
+    )
+    assertEquals(missing.status, 404)
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+    assertEquals(row!.isLocalOnly, true)
+  })
+})
+
+test('opening a name moves only an untouched default certificate to the direct default', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const set = (certificate: string | null) =>
+      f.db
+        .update(hostname)
+        .set({ certificate })
+        .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, 'reach.example.com')))
+    const read = async () =>
+      (
+        await f.db
+          .select()
+          .from(hostname)
+          .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, 'reach.example.com')))
+      )[0]!.certificate
+    // A certificate the person picked stays as it is.
+    await set('letsencrypt_http')
+    const picked = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(picked.status, 200, picked.text)
+    assertEquals(await read(), 'letsencrypt_http')
+    assertEquals(picked.body.certificateChangedNames, [])
+    await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    // The default of a tunnel-only name moves to the default of a name reached both ways.
+    await set('cloudflare_origin')
+    const moved = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(moved.status, 200, moved.text)
+    assertEquals(moved.body.certificateChangedNames, ['reach.example.com'])
+    assert((await read()) !== 'cloudflare_origin')
+  })
+})
+
+test('opening a name records an audit row, and a name with no site or one being removed is refused', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const opened = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(opened.status, 200, opened.text)
+    const rows = await f.db
+      .select()
+      .from(audit)
+      .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'doorway.update')))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.targetId, r.doorwayId)
+    const context = rows[0]!.context as { hostname: string; isLocalOnly: boolean }
+    assertEquals([context.hostname, context.isLocalOnly], ['reach.example.com', false])
+    // No change, no second row.
+    await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(
+      (
+        await f.db
+          .select()
+          .from(audit)
+          .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'doorway.update')))
+      ).length,
+      1
+    )
+    await f.db.update(doorway).set({ status: 'removing' }).where(eq(doorway.id, r.doorwayId))
+    const removing = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(removing.status, 409, removing.text)
+    assertEquals(removing.body.error, 'doorway_removing')
+  })
+})
+
+test('a name no site serves cannot be opened for direct visitors', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'nosite.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const doorwayId = (added.body.hostname as { id: string }).id
+    const res = await call(
+      f,
+      'PATCH',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+      f.managerCookie,
+      { isLocalOnly: false }
+    )
+    assertEquals(res.status, 409, res.text)
+    assertEquals(res.body.error, 'doorway_no_site')
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))
+    assertEquals(row!.isLocalOnly, true)
+  })
+})
+
+/** A ready public pair covering the name, pinned to it, and a deploy applied after the pin. */
+async function pinPublicPair(f: Fixture, siteId: string, name: string, notAfter: string) {
+  const [pair] = await f.db
+    .insert(tls)
+    .values({
+      organizationId: f.orgA,
+      source: 'lets_encrypt',
+      status: 'ready',
+      notAfter,
+      certificatePem: 'certificate',
+      privateKeyPem: 'key',
+      metadata: { dnsNames: [name] },
+    })
+    .returning({ id: tls.id })
+  f.cleanup.push(async () => {
+    await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.tlsId, pair!.id))
+    await f.db.delete(tls).where(eq(tls.id, pair!.id))
+  })
+  await f.db
+    .update(hostname)
+    .set({ certificate: 'letsencrypt_http', tlsId: pair!.id })
+    .where(and(eq(hostname.hostingId, siteId), eq(hostname.hostname, name)))
+  return pair!.id
+}
+
+async function applyDeploy(f: Fixture, siteId: string, status: 'applied' | 'failed') {
+  const [site] = await f.db
+    .select({ environmentId: service.environmentId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(eq(hosting.id, siteId))
+  const values = {
+    status,
+    finishedAt: new Date(Date.now() + 60_000).toISOString(),
+    durationMs: 1000,
+  }
+  // One deployment per environment and server: a later outcome updates it.
+  const updated = await f.db
+    .update(deployment)
+    .set(values)
+    .where(
+      and(eq(deployment.environmentId, site!.environmentId), eq(deployment.serverId, f.servers[2]))
+    )
+    .returning({ id: deployment.id })
+  if (updated.length === 0) {
+    await f.db
+      .insert(deployment)
+      .values({ environmentId: site!.environmentId, serverId: f.servers[2], ...values })
+  }
+}
+
+test('a name is verified only with a pinned public pair that covers it and a deploy applied after the pin', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const now = new Date()
+    const future = new Date(now.getTime() + 60 * 86_400_000).toISOString()
+    // No pin, no deploy.
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await pinPublicPair(f, r.site, name, future)
+    // Pinned, but nothing deployed since.
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await applyDeploy(f, r.site, 'failed')
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await applyDeploy(f, r.site, 'applied')
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [name])
+    // A name the site does not store is not verified.
+    await f.db.delete(hostname).where(eq(hostname.hostingId, r.site))
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+  })
+})
+
+test('a name moved from a verified public pair to a provider origin certificate skips verification again and its route is written again', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const future = new Date(Date.now() + 60 * 86_400_000).toISOString()
+    const deps = { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) }
+    await runVerifiedNamesSweepTick(f.db, deps)
+    await pinPublicPair(f, r.site, name, future)
+    await applyDeploy(f, r.site, 'applied')
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    assert(JSON.stringify(provider.routeBodies.at(-1)).includes('"noTLSVerify":false'))
+    assertEquals(await loadVerifiedNames(f.db, r.id, new Date()), [name])
+    // The name now asks for the provider's origin certificate, which the connector cannot verify.
+    const [origin] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.orgA,
+        source: 'provider_origin',
+        status: 'ready',
+        notAfter: future,
+        certificatePem: 'certificate',
+        privateKeyPem: 'key',
+        metadata: { dnsNames: [name] },
+      })
+      .returning({ id: tls.id })
+    f.cleanup.push(async () => {
+      await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.tlsId, origin!.id))
+      await f.db.delete(tls).where(eq(tls.id, origin!.id))
+    })
+    await f.db
+      .update(hostname)
+      .set({ certificate: 'cloudflare_origin', tlsId: origin!.id })
+      .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, name)))
+    await applyDeploy(f, r.site, 'applied')
+    assertEquals(await loadVerifiedNames(f.db, r.id, new Date()), [])
+    const before = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    assertEquals(provider.routeBodies.length, before + 1)
+    const pushed = JSON.stringify(provider.routeBodies.at(-1))
+    assert(pushed.includes('"noTLSVerify":true'))
+    assert(!pushed.includes('"noTLSVerify":false'))
+    // Nothing more to write once the route matches.
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+  })
+})
+
+test('the sweep writes the verified set once, then leaves the tunnel alone, and retries a failed write after a wait', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const future = new Date(Date.now() + 60 * 86_400_000).toISOString()
+    const registry = createTunnelAdapterRegistry(fakeProvider)
+    const deps = { secrets: f.secrets, registry }
+    // Bring the stored route set in line first (the add already wrote it).
+    await runVerifiedNamesSweepTick(f.db, deps)
+    const quiet = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+    assertEquals(provider.routeBodies.length, quiet)
+    await pinPublicPair(f, r.site, name, future)
+    await applyDeploy(f, r.site, 'applied')
+    const first = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals(first.pushed, 1)
+    assert(JSON.stringify(provider.routeBodies.at(-1)).includes('"noTLSVerify":false'))
+    const afterFirst = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+    assertEquals(provider.routeBodies.length, afterFirst)
+    // A route set that no longer matches what was written (a name added behind the
+    // sweep's back) is written again even though the verified set is the same.
+    await f.db
+      .update(tunnel)
+      .set({
+        metadata: sql`jsonb_set(${tunnel.metadata}, '{routes,hostnames}', '[]'::jsonb)`,
+      })
+      .where(eq(tunnel.id, r.id))
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    // A failing provider is tried once, then left alone until its wait passes.
+    await f.db
+      .update(tunnel)
+      .set({ metadata: sql`jsonb_set(${tunnel.metadata}, '{routes,hostnames}', '[]'::jsonb)` })
+      .where(eq(tunnel.id, r.id))
+    provider.failRoutes = true
+    const failed = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals([failed.pushed, failed.failed], [0, 1])
+    const attempts = provider.calls.length
+    const waiting = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals([waiting.pushed, waiting.failed], [0, 0])
+    assertEquals(provider.calls.length, attempts)
+    provider.failRoutes = false
+    const later = new Date(Date.now() + 2 * 60 * 60_000)
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps, later)).pushed, 1)
   })
 })

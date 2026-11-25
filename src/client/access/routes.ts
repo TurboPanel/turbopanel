@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -17,10 +17,12 @@ import {
   assertOrgOwnerOr403,
   can,
   canManageOrganization,
+  lockOrganizationOwnerGrants,
 } from '../authz/index.ts'
 import { getPermissionCatalog } from '../authz/catalog.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { grant, invitation } from '../../db/schema.ts'
+import { grant, invitation, teammate } from '../../db/schema.ts'
+import { canAccessOrganization } from '../org-context.ts'
 import { getOrgId } from '../shared.ts'
 import { acceptInvitationForUser } from './invitation-accept.ts'
 import {
@@ -44,6 +46,7 @@ import {
 async function assertRevocableAllowGrant(
   db: Db,
   accessRow: {
+    id: string
     entityType: string
     entityId: string
     permission: string
@@ -51,7 +54,7 @@ async function assertRevocableAllowGrant(
   }
 ): Promise<void> {
   if (accessRow.entityType === 'organization' && accessRow.permission === 'organization:own') {
-    await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
+    await assertNotLastOrgOwner(db, accessRow.entityId, { grantId: accessRow.id })
     return
   }
   if (accessRow.entityType === 'team' && accessRow.permission === 'team:own') {
@@ -74,6 +77,35 @@ async function assertCanManageAccessOr403(
   }
 
   return assertOrgOwnerOr403(c, entity.entityType, entity.entityId)
+}
+
+/**
+ * Whether the caller can see an entity at all: access to its organization, or
+ * any grant of their own (or one of their teams) on the entity itself.
+ */
+async function callerCanSeeEntity(
+  db: Db,
+  userId: string,
+  entity: { entityType: string; entityId: string; organizationId: string }
+): Promise<boolean> {
+  if (await canAccessOrganization(db, userId, entity.organizationId)) return true
+  const teamIds = (
+    await db.select({ teamId: teammate.teamId }).from(teammate).where(eq(teammate.userId, userId))
+  ).map((row) => row.teamId)
+  const actorMatch = teamIds.length
+    ? or(
+        and(eq(grant.actorType, 'user'), eq(grant.actorId, userId)),
+        and(eq(grant.actorType, 'team'), inArray(grant.actorId, teamIds))
+      )
+    : and(eq(grant.actorType, 'user'), eq(grant.actorId, userId))
+  const rows = await db
+    .select({ id: grant.id })
+    .from(grant)
+    .where(
+      and(eq(grant.entityType, entity.entityType), eq(grant.entityId, entity.entityId), actorMatch)
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 async function parseCreateAccessBody(
@@ -173,17 +205,17 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (!entity) {
+    const allowed = entity
+      ? await can(db, session.userId, validated.permissionKey, entity.entityType, entity.entityId)
+      : false
+
+    // An unknown id, and an entity the caller cannot see (no grant for the
+    // asked permission, no access to its organization, no grant of their own
+    // or their team's on it), answer with the same 404, so the check cannot
+    // probe which ids exist elsewhere.
+    if (!entity || (!allowed && !(await callerCanSeeEntity(db, session.userId, entity)))) {
       return c.json({ error: 'Not found' }, 404)
     }
-
-    const allowed = await can(
-      db,
-      session.userId,
-      validated.permissionKey,
-      entity.entityType,
-      entity.entityId
-    )
 
     return c.json({ allowed })
   })
@@ -253,11 +285,11 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (!entity) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    if (!isAccessGrantEntityType(entity.entityType)) {
+    if (
+      !entity ||
+      !isAccessGrantEntityType(entity.entityType) ||
+      !(await callerCanSeeEntity(db, session.userId, entity))
+    ) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -294,11 +326,11 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const { subjectKind, subjectId, resourceId, permissionKey } = parsed
 
     const entity = await resolveEntityById(db, resourceId)
-    if (!entity) {
-      return c.json({ error: 'Entity not found' }, 404)
-    }
-
-    if (!isAccessGrantEntityType(entity.entityType)) {
+    if (
+      !entity ||
+      !isAccessGrantEntityType(entity.entityType) ||
+      !(await callerCanSeeEntity(db, session.userId, entity))
+    ) {
       return c.json({ error: 'Entity not found' }, 404)
     }
 
@@ -356,6 +388,7 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const accessId = c.req.param('id')
     const accessRows = await db
       .select({
+        id: grant.id,
         entityType: grant.entityType,
         entityId: grant.entityId,
         permission: grant.permission,
@@ -367,15 +400,32 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .limit(1)
 
     const accessRow = accessRows[0]
-    if (!accessRow) {
+    const accessEntity = accessRow ? await resolveEntityById(db, accessRow.entityId) : null
+    if (
+      !accessRow ||
+      !accessEntity ||
+      !(await callerCanSeeEntity(db, session.userId, accessEntity))
+    ) {
       return c.json({ error: 'Not found' }, 404)
     }
 
     const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
 
+    // Check and delete in one transaction, with the owner grants locked, so two
+    // revocations cannot each pass the guard and leave no owner.
+    let revoked = false
     try {
-      await assertRevocableAllowGrant(db, accessRow)
+      revoked = await db.transaction(async (tx) => {
+        if (
+          accessRow.entityType === 'organization' &&
+          accessRow.permission === 'organization:own'
+        ) {
+          await lockOrganizationOwnerGrants(tx, accessRow.entityId)
+        }
+        await assertRevocableAllowGrant(tx, accessRow)
+        return await revokeAccessGrant(tx, accessId)
+      })
     } catch (err) {
       const conflict = ownerRemovalConflictMessage(err)
       if (conflict) {
@@ -383,8 +433,6 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       }
       throw err
     }
-
-    const revoked = await revokeAccessGrant(db, accessId)
     if (!revoked) {
       return c.json({ error: 'Not found' }, 404)
     }

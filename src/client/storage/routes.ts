@@ -7,6 +7,7 @@ import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { getDb } from '../../db/connection.ts'
 import {
   environment,
@@ -585,6 +586,18 @@ async function validateCreateChildren(
   return null
 }
 
+/** A parent of another organization answers like an unknown one. */
+async function refuseForeignParent(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  orgId: string,
+  parent: StorageParentRef
+): Promise<Response | null> {
+  if (parent.id === null) return null
+  const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
+  return parentOrgId === orgId ? null : apiError(c, 404, 'not_found', 'Not found')
+}
+
 async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -593,6 +606,9 @@ async function createStorageRecord(
 ): Promise<Response> {
   const parent = parseStorageParent(c, body)
   if (parent instanceof Response) return parent
+
+  const foreignParent = await refuseForeignParent(c, db, orgId, parent)
+  if (foreignParent) return foreignParent
 
   const parentId = parent.id ?? orgId
   const denied = await assertCanCreateOr403(c, parent.entityKind, parentId)

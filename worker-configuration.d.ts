@@ -146,18 +146,11 @@ interface CloudflareBindings {
    */
   TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS?: string
   /**
-   * How often the Workers cron advances managed upgrades, in minutes. One of
-   * 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60; anything else (or unset) means
-   * the 15-minute default. Workers only: the Deno tick runs on every cleanup
-   * pass.
+   * JSON map of job cadences in minutes, for example
+   * `{"executionLogs": 60, "upgradeTick": 5}`. Unset or empty keeps every
+   * default; bad values clamp into each job's range (`src/jobs/registry.ts`).
    */
-  TURBOPANEL_UPGRADE_TICK_MINUTES?: string
-  /**
-   * How often this install looks for a new build, in minutes. One of the same
-   * divisors of 60; anything else (or unset) means once an hour, at the
-   * install's own minute. Test installs only (the testing environment sets 5).
-   */
-  TURBOPANEL_UPGRADE_CHECK_MINUTES?: string
+  TURBOPANEL_JOB_CADENCES?: string
   /**
    * Starting batch for managed upgrades when none is saved in the panel:
    * `count:N` or `percent:N`. Unset means every server at once (100%).

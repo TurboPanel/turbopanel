@@ -1,0 +1,7 @@
+[
+  "src/lib/panel-identity/identity.ts (lib) imports db connection src/db/connection.ts",
+  "src/lib/panel-identity/keyset-store.ts (lib) imports db connection src/db/connection.ts",
+  "src/lib/panel-identity/urls.ts (lib) imports db connection src/db/connection.ts",
+  "src/lib/panel-identity/urls.ts (lib) imports feature src/features/install/instance-hostnames.ts",
+  "src/lib/panel-identity/urls.ts (lib) imports feature src/features/install/public-origins.ts"
+]

@@ -4,8 +4,9 @@
  *
  * Idempotency key: `(environment_id, compose_volume_key)` where
  * `kind = 'volume'`. New managed rows stamp `metadata.dockerVolumeName` to
- * the storage UUID. External volumes upsert a storageCopy with
- * `options.managed = false` and `options.externalName`.
+ * the storage UUID. Author-declared `external` volumes are not registered:
+ * lint refuses them before this runs, and registering one would hand the
+ * host an author-chosen name as if the platform owned it.
  */
 
 import { and, eq } from 'drizzle-orm'
@@ -33,17 +34,6 @@ function isExternalVolume(entry: unknown): boolean {
   return isRecord(entry.external)
 }
 
-function readExternalName(entry: unknown): string | null {
-  if (!isRecord(entry)) return null
-  if (typeof entry.name === 'string' && entry.name.length > 0) {
-    return entry.name
-  }
-  if (isRecord(entry.external) && typeof entry.external.name === 'string') {
-    return entry.external.name.length > 0 ? entry.external.name : null
-  }
-  return null
-}
-
 function hasExplicitVolumeName(entry: unknown): boolean {
   if (!isRecord(entry)) return false
   return typeof entry.name === 'string' && entry.name.length > 0
@@ -57,24 +47,15 @@ function readPinnedDockerVolumeName(metadata: unknown): string | null {
 
 type VolumeSpec = {
   composeKey: string
-  managed: boolean
-  externalName: string | null
 }
 
 function listVolumeSpecs(document: ComposeDocument): VolumeSpec[] {
   if (!isRecord(document.data.volumes)) return []
   const specs: VolumeSpec[] = []
   for (const [key, entry] of Object.entries(document.data.volumes)) {
-    if (isExternalVolume(entry)) {
-      specs.push({
-        composeKey: key,
-        managed: false,
-        externalName: readExternalName(entry) ?? key,
-      })
-      continue
-    }
+    if (isExternalVolume(entry)) continue
     if (hasExplicitVolumeName(entry)) continue
-    specs.push({ composeKey: key, managed: true, externalName: null })
+    specs.push({ composeKey: key })
   }
   return specs.sort((a, b) => a.composeKey.localeCompare(b.composeKey))
 }
@@ -113,8 +94,6 @@ async function ensurePrimaryDockerLocation(
   params: {
     storageId: string
     serverId: string
-    managed: boolean
-    externalName: string | null
   }
 ): Promise<string> {
   const [existing] = await tx
@@ -124,10 +103,6 @@ async function ensurePrimaryDockerLocation(
     .limit(1)
   if (existing) return existing.id
 
-  const options: Record<string, unknown> = { managed: params.managed }
-  if (!params.managed && params.externalName) {
-    options.externalName = params.externalName
-  }
   const [inserted] = await tx
     .insert(storageCopy)
     .values({
@@ -136,7 +111,7 @@ async function ensurePrimaryDockerLocation(
       provider: 'docker',
       role: 'primary',
       state: 'pending',
-      options,
+      options: { managed: true },
     })
     .onConflictDoNothing()
     .returning({ id: storageCopy.id })
@@ -155,10 +130,7 @@ async function ensurePrimaryDockerLocation(
   return winner.id
 }
 
-function resolvedVolumeName(row: StorageRow, spec: VolumeSpec): string {
-  if (!spec.managed) {
-    return spec.externalName ?? spec.composeKey
-  }
+function resolvedVolumeName(row: StorageRow): string {
   return resolveDockerVolumeName({
     storageId: row.id,
     pinnedName: readPinnedDockerVolumeName(row.metadata),
@@ -227,13 +199,11 @@ export async function registerComposeVolumes(
             )
           }
           existing = winner
-        } else if (spec.managed) {
+        } else {
           const storageId = inserted.id
           const metadata = { dockerVolumeName: storageId }
           await tx.update(storage).set({ metadata }).where(eq(storage.id, storageId))
           existing = { ...inserted, metadata }
-        } else {
-          existing = inserted
         }
         byComposeKey.set(spec.composeKey, existing)
       }
@@ -241,16 +211,14 @@ export async function registerComposeVolumes(
       const locationId = await ensurePrimaryDockerLocation(tx, {
         storageId: existing.id,
         serverId: params.serverId,
-        managed: spec.managed,
-        externalName: spec.externalName,
       })
 
       registered.push({
         storageId: existing.id,
         locationId,
         composeKey: spec.composeKey,
-        volumeName: resolvedVolumeName(existing, spec),
-        managed: spec.managed,
+        volumeName: resolvedVolumeName(existing),
+        managed: true,
       })
     })
   })

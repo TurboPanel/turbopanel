@@ -38,6 +38,7 @@ import {
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { loadManagedOptions } from '../managed/options.ts'
+import { isManagedNeverProvisioned } from '../managed/serialize.ts'
 import {
   type BindingDelivery,
   HOST_RUN_LOOPBACK_HOST,
@@ -620,4 +621,24 @@ export async function loadBindingOwnedKeysForService(
     .from(variable)
     .where(and(eq(variable.serviceId, serviceId), isNotNull(variable.bindingId)))
   return new Set(rows.map((r) => r.key))
+}
+
+/**
+ * True when any of these services is bound to a managed cluster whose first
+ * apply never finished (see `isManagedNeverProvisioned`). A deploy must not
+ * start a service against a database that is not there: it would only
+ * crash-loop on the missing endpoint.
+ */
+export async function hasUnprovisionedBoundManaged(
+  db: Db,
+  serviceIds: readonly string[]
+): Promise<boolean> {
+  if (serviceIds.length === 0) return false
+  const rows = await db
+    .select({ status: managed.status, metadata: managed.metadata })
+    .from(binding)
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managed, eq(login.managedId, managed.id))
+    .where(inArray(binding.serviceId, [...serviceIds]))
+  return rows.some((row) => isManagedNeverProvisioned(row))
 }

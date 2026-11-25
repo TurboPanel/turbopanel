@@ -72,7 +72,7 @@ function stubDb(trace: Trace, claimed: boolean): Db {
 async function buildApp(trace: Trace, opts: StubOptions = {}) {
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
 
   const gate: WebhookGate<StubHolder> = {
@@ -111,7 +111,7 @@ async function buildApp(trace: Trace, opts: StubOptions = {}) {
       trace.push('dispatch')
       if (opts.dispatchThrow) throw new Error('injected dispatch crash')
       return Promise.resolve(
-        opts.dispatchRetry ? retryable('dispatch_unavailable') : accepted({ ok: 1 }),
+        opts.dispatchRetry ? retryable('dispatch_unavailable') : accepted({ ok: 1 })
       )
     },
   }
@@ -163,35 +163,46 @@ test('the rate limit is spent before any resolution work', async () => {
   const app = new Hono<AppEnv>()
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   app.use('*', (c, next) => {
     c.set('db', stubDb(trace, true))
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
-  registerWebhookGate(app, [PATH], {
-    kind: 'github',
-    logScope: 'stub-webhook',
-    maxBodyBytes: 64,
-    rateLimitKey: () => 'stub',
-    resolve: () => {
-      trace.push('resolve')
-      return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
-    },
-    isUnconfigured: () => false,
-    unconfiguredError: 'stub_not_configured',
-    verify: () => Promise.resolve(true),
-    deliveryId: () => Promise.resolve('d'),
-    eventName: () => 'push',
-    dispatch: () => Promise.resolve(accepted({})),
-  } satisfies WebhookGate<StubHolder>, {
-    runtime: 'deno',
-    rateLimiter: { limit: () => Promise.resolve({ success: false }) },
-  })
+  registerWebhookGate(
+    app,
+    [PATH],
+    {
+      kind: 'github',
+      logScope: 'stub-webhook',
+      maxBodyBytes: 64,
+      rateLimitKey: () => 'stub',
+      resolve: () => {
+        trace.push('resolve')
+        return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
+      },
+      isUnconfigured: () => false,
+      unconfiguredError: 'stub_not_configured',
+      verify: () => Promise.resolve(true),
+      deliveryId: () => Promise.resolve('d'),
+      eventName: () => 'push',
+      dispatch: () => Promise.resolve(accepted({})),
+    } satisfies WebhookGate<StubHolder>,
+    {
+      runtime: 'deno',
+      rateLimiter: { limit: () => Promise.resolve({ success: false }) },
+    }
+  )
 
   const res = await app.request(post())
   assertEquals(res.status, 429)
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Too many requests',
+    code: 'rate_limited',
+    message: 'Too many requests',
+  })
   assertEquals(res.headers.get('Retry-After'), String(WEBHOOK_RATE_LIMIT_RETRY_AFTER_SECONDS))
   // Nothing past the limiter ran — that is the whole point of it being first.
   assertEquals(trace, [])
@@ -209,8 +220,7 @@ test('candidates with no secret answer 503, not 401', async () => {
   // "Not configured" is a gap on this side; saying 401 would send the operator
   // hunting for a credential problem at the provider.
   const trace: Trace = []
-  const res = await (await buildApp(trace, { candidates: [{ secret: null }] }))
-    .request(post())
+  const res = await (await buildApp(trace, { candidates: [{ secret: null }] })).request(post())
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'stub_not_configured' })
   assertEquals(trace.includes('claim'), false)
@@ -228,12 +238,17 @@ test('a failed verification never reaches the ledger', async () => {
 
 test('verification walks candidates until one works', async () => {
   const trace: Trace = []
-  const res = await (await buildApp(trace, {
-    candidates: [{ secret: null }, { secret: 'wrong' }, { secret: 'shh' }],
-  })).request(post())
+  const res = await (
+    await buildApp(trace, {
+      candidates: [{ secret: null }, { secret: 'wrong' }, { secret: 'shh' }],
+    })
+  ).request(post())
   assertEquals(res.status, 200)
   // The unconfigured one is skipped rather than treated as a pass.
-  assertEquals(trace.filter((e) => e.startsWith('verify')), ['verify:wrong', 'verify:shh'])
+  assertEquals(
+    trace.filter((e) => e.startsWith('verify')),
+    ['verify:wrong', 'verify:shh']
+  )
 })
 
 test('a duplicate delivery answers 204 without dispatching', async () => {
@@ -279,7 +294,7 @@ test('an oversized body is refused before it is buffered', async () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'content-length': '999' },
       body: '{}',
-    }),
+    })
   )
   assertEquals(res.status, 413)
 })
@@ -312,7 +327,7 @@ test('an oversized body without content-length is refused', async () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: `{"pad":"${'x'.repeat(80)}"}`,
-    }),
+    })
   )
   assertEquals(res.status, 413)
   assertEquals(trace.includes('dispatch'), false)
@@ -357,28 +372,33 @@ test('a missing database answers 503 before resolution', async () => {
   const app = new Hono<AppEnv>()
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   app.use('*', (c, next) => {
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
-  registerWebhookGate(app, [PATH], {
-    kind: 'github',
-    logScope: 'stub-webhook',
-    maxBodyBytes: 64,
-    rateLimitKey: () => 'stub',
-    resolve: () => {
-      trace.push('resolve')
-      return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
-    },
-    isUnconfigured: () => false,
-    unconfiguredError: 'stub_not_configured',
-    verify: () => Promise.resolve(true),
-    deliveryId: () => Promise.resolve('d'),
-    eventName: () => 'push',
-    dispatch: () => Promise.resolve(accepted({})),
-  } satisfies WebhookGate<StubHolder>, { runtime: 'deno' })
+  registerWebhookGate(
+    app,
+    [PATH],
+    {
+      kind: 'github',
+      logScope: 'stub-webhook',
+      maxBodyBytes: 64,
+      rateLimitKey: () => 'stub',
+      resolve: () => {
+        trace.push('resolve')
+        return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
+      },
+      isUnconfigured: () => false,
+      unconfiguredError: 'stub_not_configured',
+      verify: () => Promise.resolve(true),
+      deliveryId: () => Promise.resolve('d'),
+      eventName: () => 'push',
+      dispatch: () => Promise.resolve(accepted({})),
+    } satisfies WebhookGate<StubHolder>,
+    { runtime: 'deno' }
+  )
 
   const res = await app.request(post())
   assertEquals(res.status, 503)
@@ -393,25 +413,138 @@ test('missing encryption secrets answer 503 before resolution', async () => {
     c.set('db', stubDb(trace, true))
     return next()
   })
-  registerWebhookGate(app, [PATH], {
-    kind: 'github',
-    logScope: 'stub-webhook',
-    maxBodyBytes: 64,
-    rateLimitKey: () => 'stub',
-    resolve: () => {
-      trace.push('resolve')
-      return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
-    },
-    isUnconfigured: () => false,
-    unconfiguredError: 'stub_not_configured',
-    verify: () => Promise.resolve(true),
-    deliveryId: () => Promise.resolve('d'),
-    eventName: () => 'push',
-    dispatch: () => Promise.resolve(accepted({})),
-  } satisfies WebhookGate<StubHolder>, { runtime: 'deno' })
+  registerWebhookGate(
+    app,
+    [PATH],
+    {
+      kind: 'github',
+      logScope: 'stub-webhook',
+      maxBodyBytes: 64,
+      rateLimitKey: () => 'stub',
+      resolve: () => {
+        trace.push('resolve')
+        return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
+      },
+      isUnconfigured: () => false,
+      unconfiguredError: 'stub_not_configured',
+      verify: () => Promise.resolve(true),
+      deliveryId: () => Promise.resolve('d'),
+      eventName: () => 'push',
+      dispatch: () => Promise.resolve(accepted({})),
+    } satisfies WebhookGate<StubHolder>,
+    { runtime: 'deno' }
+  )
 
   const res = await app.request(post())
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'Encryption unavailable' })
   assertEquals(trace, [])
+})
+
+/** A ledger that behaves like the unique index: the second claim of a key loses. */
+function ledgerDb(trace: Trace, keys: Set<string>): Db {
+  return {
+    insert: () => ({
+      values: (row: { externalDeliveryId: string }) => ({
+        onConflictDoNothing: () => ({
+          returning: () => {
+            trace.push(`claim:${row.externalDeliveryId.slice(0, 11)}`)
+            if (keys.has(row.externalDeliveryId)) return Promise.resolve([])
+            keys.add(row.externalDeliveryId)
+            return Promise.resolve([{ id: 'row' }])
+          },
+        }),
+      }),
+    }),
+    delete: () => ({
+      where: () => {
+        trace.push('release')
+        keys.clear()
+        return Promise.resolve(undefined)
+      },
+    }),
+  } as unknown as Db
+}
+
+async function buildDigestApp(trace: Trace, keys: Set<string>, retry: () => boolean) {
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption'
+  )
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', ledgerDb(trace, keys))
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    return next()
+  })
+  registerWebhookGate(
+    app,
+    [PATH],
+    {
+      kind: 'github',
+      logScope: 'stub-webhook',
+      maxBodyBytes: 64,
+      rateLimitKey: () => 'stub',
+      resolve: (ctx) =>
+        Promise.resolve({
+          ok: true as const,
+          candidates: [{ id: ctx.headers.get('x-forge') ?? 'forge-a' }],
+        }),
+      isUnconfigured: () => false,
+      unconfiguredError: 'stub_not_configured',
+      verify: () => Promise.resolve(true),
+      deliveryId: (ctx) => Promise.resolve(ctx.headers.get('x-delivery')),
+      eventName: (ctx) => ctx.headers.get('x-event'),
+      bodyDigestScope: (holder) => holder.id,
+      dispatch: () => {
+        trace.push('dispatch')
+        return Promise.resolve(retry() ? retryable('down') : accepted({}))
+      },
+    } satisfies WebhookGate<{ id: string }>,
+    { runtime: 'deno' }
+  )
+  return app
+}
+
+function postWith(body: string, delivery: string, event: string, forge = 'forge-a'): Request {
+  return new Request(`http://instance${PATH}`, {
+    method: 'POST',
+    headers: { 'x-delivery': delivery, 'x-event': event, 'x-forge': forge },
+    body,
+  })
+}
+
+test('one body is processed once whatever the unsigned delivery id or event says', async () => {
+  const trace: Trace = []
+  const app = await buildDigestApp(trace, new Set(), () => false)
+  assertEquals((await app.request(postWith('{"a":1}', 'd1', 'push'))).status, 200)
+  assertEquals((await app.request(postWith('{"a":1}', 'd2', 'push'))).status, 204)
+  assertEquals((await app.request(postWith('{"a":1}', 'd3', 'check_run'))).status, 204)
+  // Same id and bytes: a genuine redelivery.
+  assertEquals((await app.request(postWith('{"a":1}', 'd1', 'push'))).status, 204)
+  assertEquals(trace.filter((e) => e === 'dispatch').length, 1)
+  // A different body is a different delivery.
+  assertEquals((await app.request(postWith('{"a":2}', 'd4', 'push'))).status, 200)
+})
+
+test('a retryable outcome frees the body digest so the provider retry runs', async () => {
+  const trace: Trace = []
+  let failing = true
+  const keys = new Set<string>()
+  const app = await buildDigestApp(trace, keys, () => failing)
+  assertEquals((await app.request(postWith('{"a":1}', 'd1', 'push'))).status, 503)
+  assertEquals(keys.size, 0)
+  failing = false
+  assertEquals((await app.request(postWith('{"a":1}', 'd1', 'push'))).status, 200)
+})
+
+test('the same body for two forges is dispatched once for each', async () => {
+  const trace: Trace = []
+  const app = await buildDigestApp(trace, new Set(), () => false)
+  assertEquals((await app.request(postWith('{"a":1}', 'u1', 'push', 'forge-a'))).status, 200)
+  assertEquals((await app.request(postWith('{"a":1}', 'u2', 'push', 'forge-b'))).status, 200)
+  assertEquals(trace.filter((e) => e === 'dispatch').length, 2)
+  // Each forge still dedupes its own replays.
+  assertEquals((await app.request(postWith('{"a":1}', 'u3', 'push', 'forge-b'))).status, 204)
+  assertEquals(trace.filter((e) => e === 'dispatch').length, 2)
 })

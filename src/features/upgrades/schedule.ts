@@ -47,9 +47,9 @@ export function pickUpgradeCheckMinute(draw: number): number {
 }
 
 /**
- * The first slot after `anchorMs`. Slots repeat every `intervalMinutes` (a
- * divisor of 60) at this install's minute: hourly at `minute`, or for a
- * shorter interval at every minute congruent to it.
+ * The first slot after `anchorMs`. Slots repeat every `intervalMinutes` (1 to 60,
+ * the `upgradeCheck` job's range) at this install's minute: hourly at `minute`,
+ * or for a shorter interval at every minute congruent to it.
  */
 function slotAfter(anchorMs: number, minute: number, intervalMinutes: number): number {
   const period = Math.min(Math.max(intervalMinutes, 1), 60) * MINUTE_MS

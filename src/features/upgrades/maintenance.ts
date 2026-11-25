@@ -14,9 +14,21 @@ import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinato
 import { parseUpgradeBatchDefault } from '../settings/upgrade-settings.ts'
 import { createDrizzleUpgradeStore, type UpgradeStore } from './store.ts'
 import { isUpgradeCheckDue } from './schedule.ts'
-import { parseUpgradeCheckMinutes, UPGRADE_CHECK_MINUTES_ENV } from './tick-cadence.ts'
+import { type CronCadenceTable, jobEveryMinutes, resolveJobCadences } from '../../jobs/registry.ts'
+import { JOB_CADENCES_ENV } from '../settings/job-cadences.ts'
 import { parseUpgradeVerifyTimeoutMs, UPGRADE_VERIFY_TIMEOUT_ENV } from './transitions.ts'
 import type { UpgradeRuntime } from './planner.ts'
+
+/** Minutes between update checks: the `upgradeCheck` job of the given cadences, else of the env var. */
+export function upgradeCheckIntervalMinutes(
+  env: Record<string, string | undefined>,
+  cadences?: CronCadenceTable
+): number {
+  return jobEveryMinutes(
+    'upgradeCheck',
+    cadences ?? resolveJobCadences(env[JOB_CADENCES_ENV]).table
+  )
+}
 
 export async function runUpgradeMaintenance(input: {
   db: Db
@@ -24,6 +36,11 @@ export async function runUpgradeMaintenance(input: {
   runtime: UpgradeRuntime
   resolveManifests: boolean
   env?: Record<string, string | undefined>
+  /**
+   * The resolved job cadences (`upgradeCheck` is read here). Omitted: taken
+   * from `TURBOPANEL_JOB_CADENCES` in `env`, which is all Workers has.
+   */
+  cadences?: CronCadenceTable
   instanceInstalled: { version: string; commit: string | null }
   /** Full label of the installed package (`0.1.19-canary.3`), when known. */
   buildLabel?: string | null
@@ -59,7 +76,7 @@ export async function runUpgradeMaintenance(input: {
   })
   const check = await claimScheduledUpgradeCheck(store, {
     now: new Date(),
-    intervalMinutes: parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV]),
+    intervalMinutes: upgradeCheckIntervalMinutes(env, input.cadences),
     resolveManifests: input.resolveManifests,
     development,
   })

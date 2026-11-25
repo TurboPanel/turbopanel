@@ -75,8 +75,8 @@ function redactOutcome(outcome: InboundOutcome): InboundOutcome {
  *
  * `instance-acme-issuance-event` and `acme-issuance-event` are
  * fire-and-forget inbound messages, not envelopes. They never reach this
- * function. `public-urls-update` grew optional `hostnames` / `instanceAcme`
- * on the outbound side; its result kind is unchanged.
+ * function. `public-urls-update` carries `hostnames` and an optional
+ * `instanceAcme` on the outbound side; its result kind is unchanged.
  *
  * `update-progress` and `command-progress` have no correlated request and
  * must not gain a case here. They are fire-and-forget progress, not a

@@ -14,9 +14,26 @@
   `src/app/version.ts`); `resolveDaemonSupport` holds it against
   `MIN_SUPPORTED_DAEMON_VERSION`. An **unsupported** daemon keeps its
   connection (that is the update path) but the command consumer fails its
-  commands with `daemon_unsupported`; a build reporting no version is
-  **unknown** and passes — flag, not refusal, until the fleet is re-enrolled
-  on tagged builds. The other direction lives on the daemon
+  commands with `daemon_update_required`. A daemon is also refused (same
+  code) when its stored hello does not list **every** name in
+  `DAEMON_WIRE_FEATURES`, or when it reports no version or one that does not
+  parse: the check fails closed (`resolveDaemonSupport(version, features)`).
+  The refusal names the missing features; the server's update status
+  (`daemonSupport`: `status: unsupported`, `code`, `missingFeatures`, `reason`)
+  carries the same. How a refused daemon still updates: the daemon has no
+  updater of its own that runs without the control plane (its update-guard
+  timer is only a rollback watchdog), so an update is the `update` message
+  the upgrade coordinator (`src/features/upgrades/coordinator.ts`) writes to
+  the daemon's open connection. That message is not a command, never reaches
+  the consumer's refusal, and consults neither the version floor nor the
+  feature list; the daemon then fetches and verifies the release itself.
+  `coordinator-refused-daemon.hostfree.test.ts` pins it. Only the command
+  consumer refuses today, and a refusal inside the first 30 seconds of a
+  connection (`HELLO_PROJECTION_GRACE_MS`) is looked at again each second,
+  because a freshly updated daemon's hello is not stored yet and the stored
+  version and features are still the previous build's; other paths that read the stored feature list keep
+  their own gates until those gates are removed. The other direction lives on
+  the daemon
   (`../turbopaneld/src/instance/version-wire.ts`): every daemon REST response
   (including non-OK and the 401 before a refresh) and the cell attach
   `{ type: "version", instanceVersion }` frame (`src/daemon/attach-version.ts`,
@@ -33,7 +50,7 @@
   2026-11-05 as a **pre-launch hard cutoff**: `0.1.18` is the first daemon
   that registers a sealing key, opens sealed decrypt answers and opens the
   sealed reconcile password hash, and `0.1.22` is the first control plane
-  that seals them. Older daemons get `daemon_unsupported` on every command;
+  that seals them. Older daemons get `daemon_update_required` on every command;
   older control planes are flagged by the daemon and refused as an
   `instance-update` target. Every peer on those two lines is let in,
   including trunk builds from before the sealing work landed; only canary
@@ -47,15 +64,11 @@
   Dispatching `instance-update` does not gate on the daemon version (the
   daemon only runs the reconcile). The downgrade guard lives on the daemon:
   it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.
-  `DAEMON_FEATURE_MIN_VERSIONS` (same map in both `version-wire.ts` files) is
-  the peer-version feature gate, distinct from the metrics capability plan.
-  A panel-visible admin feature that depends on a daemon-rendered artifact
-  adds an entry here; the UI phase calls `resolveDaemonCapabilities` and does
-  not re-implement semver comparison. An unknown peer version is **not**
-  supported for a feature (the opposite default from the floor's `unknown`).
-  The first entry is `instance-cert-sources-per-hostname` at daemon **`0.1.1`**,
-  the release that renders per-hostname certificate sources in
-  `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2`.
+  The daemon-side semver feature map (`DAEMON_FEATURE_MIN_VERSIONS`) and
+  `resolveDaemonCapabilities` are gone: every supported daemon renders
+  per-hostname certificate sources, so nothing gates on a daemon version
+  beyond the floor. A new daemon-rendered feature is gated on the daemon's
+  advertised `features[]`.
   A release that introduces a new wire message leaves
   `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION` where
   they are. Each new message is feature-gated: the peer advertises support
@@ -64,11 +77,9 @@
   control plane, and the contract check fails a control plane that lists a
   feature daemon trunk lacks; `filterHelloFeatures` ignores names this
   control plane does not know) and the daemon checks `instanceSupports()` before
-  treating the peer as able to speak it. `php-site-modes-v1` gates a deploy
+  treating the peer as able to speak it. `php-site-modes-v1` covers a deploy
   field rather than a message: the daemon runs each PHP site in its `php.mode`
-  (FastCGI or php-fpm, nginx and Apache). Deploy prepare refuses a mode other
-  than php-fpm for a daemon that does not list it (`php_mode_unavailable`,
-  reason `daemon_unsupported`) and stamps no mode on its sites. A deployment
+  (FastCGI or php-fpm, nginx and Apache). A deployment
   record without `phpModes` means the modes are unknown, not php-fpm.
   OpenLiteSpeed and Caddy sites ignore `php.mode` in the daemon for now (the
   OpenLiteSpeed lsphp work is turbopaneld#250). `update-progress`
@@ -118,7 +129,7 @@ see the last row.
 | ---------------------------- | --------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Client (end-user UI)         | `/api/client/v1/*`                | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels, effective sshPort/ntpDefaults), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org record (`GET`/`PATCH /organizations/:id`), org default-timezone + temperature-unit + host-defaults + default-environment + project-settings + server-capacity + managed-defaults + TurboFabric (`GET`/`PUT`/`DELETE /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `PATCH /organizations/:id/fabric/servers/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`               | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Developer (dev console)      | `/api/developer/v1/*`             | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade-status`, `dev-host/*`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Developer (dev console)      | `/api/developer/v1/*`             | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, `system/upgrade-status`, `dev-host/*`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Admin                        | `/api/admin/v1/*`                 | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Daemon                       | `/api/daemon/v1/*`                | `/ws/daemon/v1`           | `version`, `instance/ca`, `instance/uploaded-trust`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —                         | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md`                                                                                                                                                                                                                                                 |
@@ -156,9 +167,9 @@ bounded readers and limiters).
    anonymous and keyed by IP.
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
-  `src/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
+  `src/install/routes.ts` (registered from `src/platform/deno/server.ts`, so Deno only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
-  `src/developer/tunnel-routes.ts`, and the version route are registered in
+  and the version route are registered in
   `src/deno-dev.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
   (admin/superadmin session required). Self-hosted-only admin routes live under
   `src/platform/deno/ingress/` and are mounted through
@@ -166,9 +177,12 @@ bounded readers and limiters).
   `src/platform/deno/server.ts` only; `check:import-boundaries` refuses any other
   importer, and `src/admin/platform-admin-routes.hostfree.test.ts` plus
   `src/workers.entry.test.ts` prove the Workers router has none of them.
-  Workers-safe developer REST lives in
-  `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
-  `src/developer/routes.ts`. Client bindings (`src/client/bindings/`) expose
+  The developer surface is Deno development only: `src/developer/routes.ts`
+  (`registerDeveloperRoutes`, called from `src/deno-dev.ts`) builds the router
+  from `src/developer/routes-core.ts` and adds the Drizzle Studio and DuckDB UI
+  routes. Workers mounts no developer routes. Daemon tooling (`/daemon/connections`,
+  `/daemon/broadcast`, addresses, ...) and the tunnel token are Admin routes
+  only. Client bindings (`src/client/bindings/`) expose
   `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal →
   compose service materialization of binding-owned `variable` rows (no new
   command type). List filters are mutually exclusive: `serviceId`, consumer

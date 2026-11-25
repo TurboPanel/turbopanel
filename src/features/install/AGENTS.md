@@ -29,9 +29,6 @@ skips them when there is no `Deno` global (High Availability).
 - The daemon still writes `TURBOPANEL_PUBLIC_URLS` to
   `/etc/turbopanel/instance/runtime.env` on apply. That copy is derived from
   the rows and read only by the `instance-certs` role for certificate SANs.
-- `migrateLegacyPublicUrls` copies the old `TURBOPANEL_PUBLIC_URLS` _setting
-  row_ (database, admin-written) into `origin` once when the table is empty.
-  It never reads the environment.
 
 ### Instance hostnames and instance ACME
 
@@ -63,9 +60,11 @@ staging) are the `INSTANCE_ACME_SETTINGS` setting row. That group is
 independent of every organization's ACME opt-in: instance ACME code does not
 read or write it, and organization code does not read instance ACME.
 `GET/PUT /api/admin/v1/instance/public-urls` still round-trips the flat list;
-`getPublicUrls` / `setPublicUrls` project it onto `origin` with source
-`platform-ca`, and the `TURBOPANEL_PUBLIC_URLS` setting stays in sync so cert
-SAN generation and webhook reachability keep calling them.
+`getPublicUrls` / `setPublicUrls` read and write the hostname table with source
+`platform-ca`. The `TURBOPANEL_PUBLIC_URLS` `setting` row is no longer written
+or read (an orphan until migration `0001` removes it; the previous
+release's panel code can write it again during a deploy, which is harmless
+because nothing on trunk reads it).
 
 Uploaded public trust is per hostname. The install command treats an
 uploaded name as public only when the certificate the listener serves for it
@@ -123,10 +122,11 @@ origins carry no fingerprint.
 
 Every hostname, whatever its certificate source, is reached at
 `https://<host>:8443`. `POST /api/admin/v1/instance/public-urls/apply` sends
-`public-urls-update`. Daemons at or above
-`instance-cert-sources-per-hostname` (`0.1.1`) also receive `hostnames` and,
-when any source is `acme-http-01` (`lets-encrypt` on the wire), `instanceAcme`. Uploaded `keyPem` values
-are decrypted for that one hop. Older daemons get `urls` only. Port 80 is
+`public-urls-update`. The message carries `hostnames` (host, source and, for
+an uploaded certificate, the certificate and its key) and, when any source is
+`acme-http-01` (`lets-encrypt` on the wire), `instanceAcme`. There is no flat
+`urls` list on the wire. An uploaded `keyPem` travels only as the
+sealed envelope the daemon stored; it is never sent or kept as plaintext. Port 80 is
 open only during issuance or renewal. The issuer is the short-lived
 `turbopanel-instance-acme.service`, which the daemon starts and stops for
 that window. Before an `acme-http-01` hostname is applied, the daemon

@@ -39,6 +39,7 @@ import {
   principal,
   principalPlacement,
   project,
+  repository,
   server,
   service,
   share,
@@ -85,7 +86,9 @@ import {
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
   registerEnvironmentStopRoutes,
+  resolveNetworkSharesActor,
   runEnvironmentDeployForActor,
+  settlePreparedNetworkShares,
   tcpUdpIngressServiceRefs,
   validateDeployMaterials,
 } from './deploy-routes.ts'
@@ -99,6 +102,8 @@ import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { registerEnvironmentDeploymentHistoryRoutes } from './deployment-history-routes.ts'
 import { registerEnvironmentReleaseRoutes } from './release-routes.ts'
 import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
+import { setTrackedInspectForTests } from './deploy-tracked-base.ts'
+import type { InspectOutcome } from '../repositories/inspect.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -3132,18 +3137,6 @@ test('POST /environments/:id/stop refuses to delete data before anything stops',
       const stale = await postEnvironment(ctx, 'stop', destroyBody([ids.db_data!]))
       assertEquals(stale.status, 409)
       assertEquals(((await stale.json()) as { error: string }).error, 'data_volumes_changed')
-      // The server's daemon does not list the feature.
-      const outdated = await postEnvironment(ctx, 'stop', destroyBody(shown))
-      assertEquals(outdated.status, 409)
-      const body = (await outdated.json()) as {
-        error: string
-        servers: Array<{ serverId: string }>
-      }
-      assertEquals(body.error, 'delete_volumes_needs_daemon_update')
-      assertEquals(
-        body.servers.map((entry) => entry.serverId),
-        [ctx.serverId]
-      )
 
       assertEquals(await stopsQueued(ctx), 0)
       assertEquals((await targetsByServer(ctx)).get(ctx.serverId), 'pending')
@@ -3523,6 +3516,129 @@ test('the planner approves host-level content only for an allowed actor', async 
       hostAccess: { kind: 'automated' },
     })
     assertEquals('kind' in ordinary ? ordinary.kind : ordinary.hostLevelApproved, false)
+  })
+})
+
+// --- network shares (SMB volumes): actor permission and server switch --------
+
+function composeWithShare(): ComposeDocument {
+  return {
+    version: 1,
+    data: {
+      services: { web: { image: 'nginx:1', volumes: ['media:/media'] } },
+      volumes: {
+        media: { driver_opts: { type: 'cifs', device: '//nas.example.net/media', o: 'ro' } },
+      },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+}
+
+async function setServerShares(ctx: HostLevelCtx, networkShares: boolean | undefined) {
+  await ctx.db
+    .update(server)
+    .set({ options: networkShares === undefined ? null : { networkShares } })
+    .where(eq(server.id, ctx.serverId))
+}
+
+/** A deploy of a named volume leaves a mount, a storage row and its copy behind. */
+async function dropShareStorage(ctx: HostLevelCtx): Promise<void> {
+  const mine = ctx.db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, ctx.environmentId))
+  await ctx.db.delete(mount).where(inArray(mount.serviceId, mine))
+  await ctx.db.delete(storageCopy).where(eq(storageCopy.serverId, ctx.serverId))
+  await ctx.db.delete(storage).where(eq(storage.organizationId, ctx.organizationId))
+}
+
+test('a deploy of an SMB share is refused while the server setting is off, and runs with it on', async () => {
+  await withDeployFixtures(async (ctx) => {
+    try {
+      await useCompose(ctx, composeWithShare(), false)
+
+      await setServerShares(ctx, undefined)
+      const refused = await managerDeploy(ctx)
+      assertEquals(refused.status, 403)
+      const body = (await refused.json()) as { error: string; reason: string }
+      assertEquals(body.error, 'compose_network_shares_refused')
+      assertEquals(body.reason, 'server_setting')
+      assertEquals(ctx.commandQueue.envelopes.length, 0)
+
+      await setServerShares(ctx, true)
+      assertEquals((await managerDeploy(ctx)).status, 200)
+      assertEquals(ctx.commandQueue.envelopes.length, 1)
+    } finally {
+      await dropShareStorage(ctx)
+    }
+  })
+})
+
+test('an automated deploy of an SMB share needs a person to have deployed it first', async () => {
+  await withDeployFixtures(async (ctx) => {
+    try {
+      await useCompose(ctx, composeWithShare(), false)
+      await setServerShares(ctx, true)
+
+      const first = await webhookDeploy(ctx)
+      assertEquals(first.status, 403)
+      assertEquals(((await first.json()) as { reason: string }).reason, 'approval')
+
+      assertEquals((await managerDeploy(ctx)).status, 200)
+      assertEquals((await webhookDeploy(ctx)).status, 200)
+    } finally {
+      await dropShareStorage(ctx)
+    }
+  })
+})
+
+test('resolveNetworkSharesActor: only a holder of the permission is permitted', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const person = { actorType: 'user', actorId: ctx.userId, organizationId: ctx.organizationId }
+    const asPerson = (actorId: string) =>
+      resolveNetworkSharesActor(
+        ctx.db,
+        { ...person, actorId } as Parameters<typeof resolveNetworkSharesActor>[1],
+        ctx.organizationId
+      )
+    // The fixture user holds organization:manage.
+    assertEquals((await asPerson(ctx.userId)).kind, 'permitted')
+
+    await withExtraUser({ ...ctx, workspaceId: '' }, null, async (memberId) => {
+      assertEquals((await asPerson(memberId)).kind, 'denied')
+      await ctx.db.insert(grant).values({
+        entityType: 'organization',
+        entityId: ctx.organizationId,
+        actorType: 'user',
+        actorId: memberId,
+        permission: 'environments.deploy_network_shares',
+      })
+      assertEquals((await asPerson(memberId)).kind, 'permitted')
+    })
+
+    const system = await resolveNetworkSharesActor(
+      ctx.db,
+      { ...person, actorType: 'system' } as Parameters<typeof resolveNetworkSharesActor>[1],
+      ctx.organizationId
+    )
+    assertEquals(system.kind, 'automated')
+  })
+})
+
+test('settlePreparedNetworkShares passes through when the plan has no shares', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const settled = await settlePreparedNetworkShares(
+      ctx.db,
+      { networkShares: undefined, projectId: ctx.projectId },
+      [],
+      {
+        auth: { organizationId: ctx.organizationId } as Parameters<
+          typeof settlePreparedNetworkShares
+        >[3]['auth'],
+        environmentId: ctx.environmentId,
+      }
+    )
+    assertEquals(settled, {})
   })
 })
 
@@ -4360,5 +4476,427 @@ test('deployment history lists every deploy with its outcome', async () => {
     assertEquals(listed.length, 2)
     assertEquals(new Set(listed.map((entry) => entry.status)), new Set(['succeeded', 'failed']))
     assertEquals(listed[0]!.generation > listed[1]!.generation, true)
+  })
+})
+
+// --- a project that follows its repository's compose file --------------------
+
+const SHA_OLD = '1'.repeat(40)
+const SHA_NEW = '2'.repeat(40)
+const YAML_OLD = 'services:\n  web:\n    image: nginx:old\n'
+const YAML_NEW = 'services:\n  web:\n    image: nginx:new\n'
+const STORED_SHA = '3'.repeat(40)
+const STORED_DIGEST = '4'.repeat(64)
+
+type Served = { commitSha: string; content: string | null } | { message: string }
+
+type TrackedCtx = Parameters<Parameters<typeof withDeployFixtures>[0]>[0] & {
+  sourceId: string
+  repositoryUrl: string
+  /** What the stub repository answers per ref (a branch or a commit). */
+  served: Map<string, Served>
+  reads: Array<{ ref: string; paths: readonly string[] }>
+}
+
+function stubRepository(ctx: TrackedCtx) {
+  setTrackedInspectForTests(((params: { ref: string; paths: readonly string[] }) => {
+    ctx.reads.push({ ref: params.ref, paths: params.paths })
+    const answer = ctx.served.get(params.ref)
+    if (!answer) {
+      return Promise.resolve({ ok: false, status: 404, error: 'ref', message: 'no such ref' })
+    }
+    if ('message' in answer) {
+      return Promise.resolve({ ok: false, status: 502, error: 'down', message: answer.message })
+    }
+    const path = params.paths[0]!
+    return Promise.resolve({
+      ok: true,
+      commitSha: answer.commitSha,
+      via: 'provider',
+      entries: [],
+      files:
+        answer.content === null
+          ? [{ path, found: false, reason: 'not_found' }]
+          : [{ path, found: true, content: answer.content, bytes: answer.content.length }],
+    } satisfies InspectOutcome)
+  }) as never)
+}
+
+async function withTrackedDeploy(fn: (ctx: TrackedCtx) => Promise<void>): Promise<void> {
+  await withDeployFixtures(async (base) => {
+    const repositoryUrl = `https://git.example.net/example/${crypto.randomUUID()}.git`
+    const [repo] = await base.db
+      .insert(repository)
+      .values({
+        organizationId: base.organizationId,
+        provider: 'git',
+        repositoryUrl,
+        defaultBranch: 'main',
+      })
+      .returning({ id: repository.id })
+    const ctx: TrackedCtx = {
+      ...base,
+      sourceId: repo!.id,
+      repositoryUrl,
+      served: new Map(),
+      reads: [],
+    }
+    // A server that runs a daemon has a signing key; the checkout's clone
+    // credential is sealed to it, so a followed file needs one on the target.
+    await base.db.insert(key).values({
+      serverId: base.serverId,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    })
+    await useBaseCompose(ctx.db, ctx, composeWithNamedWebService())
+    await ctx.db
+      .update(project)
+      .set({
+        options: {
+          compose: composeWithNamedWebService(),
+          composeSource: {
+            sourceId: ctx.sourceId,
+            path: 'compose.yaml',
+            ref: 'main',
+            mode: 'track',
+            seededCommitSha: STORED_SHA,
+            seededDigest: STORED_DIGEST,
+            lastReadCommitSha: STORED_SHA,
+            lastReadDigest: STORED_DIGEST,
+          },
+        },
+      })
+      .where(eq(project.id, ctx.projectId))
+    ctx.served.set('main', { commitSha: SHA_NEW, content: YAML_NEW })
+    ctx.served.set(SHA_NEW, { commitSha: SHA_NEW, content: YAML_NEW })
+    ctx.served.set(SHA_OLD, { commitSha: SHA_OLD, content: YAML_OLD })
+    stubRepository(ctx)
+    try {
+      await fn(ctx)
+    } finally {
+      setTrackedInspectForTests(null)
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${ctx.sourceId}::uuid`)
+      await ctx.db.update(project).set({ repositoryId: null }).where(eq(project.id, ctx.projectId))
+      await ctx.db.delete(repository).where(eq(repository.id, ctx.sourceId))
+    }
+  })
+}
+
+async function trackedHeaders(ctx: TrackedCtx): Promise<Record<string, string>> {
+  return {
+    Cookie: await sessionCookie(ctx.db, ctx.secrets, ctx.userId),
+    [ORG_ID_HEADER]: ctx.organizationId,
+    'Content-Type': 'application/json',
+  }
+}
+
+async function trackedPost(ctx: TrackedCtx, path: string, body = '{}'): Promise<Response> {
+  return await ctx.app.request(`/environments/${ctx.environmentId}${path}`, {
+    method: 'POST',
+    headers: await trackedHeaders(ctx),
+    body,
+  })
+}
+
+async function storedLastRead(ctx: TrackedCtx): Promise<Record<string, unknown>> {
+  const [row] = await ctx.db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, ctx.projectId))
+    .limit(1)
+  return (row!.options as { composeSource: Record<string, unknown> }).composeSource
+}
+
+function checkoutOf(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return payload.composeCheckout as Record<string, unknown> | undefined
+}
+
+function runtimeImage(payload: Record<string, unknown>): string {
+  const files = payload.composeFiles as Array<{ content: string }>
+  return /image: (\S+)/.exec(files[0]?.content ?? '')?.[1] ?? ''
+}
+
+test('a deploy of a tracking project reads the file at the branch head, records it and stores it once accepted', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    const res = await trackedPost(ctx, '/deploy')
+    assertEquals(res.status, 200)
+    const { commandId } = (await res.json()) as { commandId: string }
+
+    assertEquals(ctx.reads.length >= 1, true)
+    assertEquals(ctx.reads[0], { ref: 'main', paths: ['compose.yaml'] })
+    // The prepared compose is the repository file's, not the stored Base.
+    assertEquals(runtimeImage(await dispatchedPayload(ctx.db, commandId)), 'nginx:new')
+    // The repository tree comes from the same commit the file was read at.
+    assertEquals(checkoutOf(await dispatchedPayload(ctx.db, commandId)), {
+      sourceId: ctx.sourceId,
+      provider: 'git',
+      cloneUrl: ctx.repositoryUrl,
+      ref: 'main',
+      commitSha: SHA_NEW,
+      composePath: 'compose.yaml',
+    })
+
+    const [row] = await ctx.db
+      .select({ context: command.context })
+      .from(command)
+      .where(eq(command.id, commandId))
+      .limit(1)
+    const recorded = (row!.context as { composeBase: Record<string, unknown> }).composeBase
+    assertEquals(recorded.commitSha, SHA_NEW)
+    assertEquals(recorded.path, 'compose.yaml')
+    assertEquals(recorded.sourceId, ctx.sourceId)
+    assertEquals(String(recorded.digest).length, 64)
+
+    // History carries the same record.
+    const history = await ctx.app.request(`/environments/${ctx.environmentId}/deployments`, {
+      headers: await trackedHeaders(ctx),
+    })
+    const listed = (await history.json()) as {
+      deployments: Array<{ composeBase: { commitSha: string } | null }>
+    }
+    assertEquals(listed.deployments[0]?.composeBase?.commitSha, SHA_NEW)
+
+    // The command names the commit the file was read at, not just the branch.
+    const [meta] = await ctx.db
+      .select({ metadata: command.metadata })
+      .from(command)
+      .where(eq(command.id, commandId))
+      .limit(1)
+    assertEquals(
+      (meta!.metadata as { sourceSelection?: { commitSha?: string } } | null)?.sourceSelection
+        ?.commitSha,
+      SHA_NEW
+    )
+
+    const stored = await storedLastRead(ctx)
+    assertEquals(stored.lastReadCommitSha, SHA_NEW)
+    assertEquals(stored.lastReadDigest, recorded.digest)
+  })
+})
+
+test('a deploy whose file is missing, unparseable or unreachable is refused and stores nothing', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    const cases: Array<[Served, number, string]> = [
+      [{ commitSha: SHA_NEW, content: null }, 422, 'compose_file_missing'],
+      [{ commitSha: SHA_NEW, content: 'services: [unclosed' }, 422, 'compose_file_unparseable'],
+      [{ message: 'provider down' }, 502, 'compose_source_unavailable'],
+    ]
+    for (const [answer, status, code] of cases) {
+      ctx.served.set('main', answer)
+      const res = await trackedPost(ctx, '/deploy')
+      assertEquals(res.status, status)
+      const body = (await res.json()) as Record<string, unknown>
+      assertEquals(body.error, code)
+      assertEquals(body.path, 'compose.yaml')
+      assertEquals(body.ref, 'main')
+    }
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, STORED_SHA)
+  })
+})
+
+test('a deploy refused after the file was read leaves the stored Base as it was', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    // The new file binds the Docker socket, which this organization has not enabled.
+    ctx.served.set('main', {
+      commitSha: SHA_NEW,
+      content:
+        'services:\n  web:\n    image: traefik:v3\n    volumes:\n      - ' +
+        DOCKER_SOCKET_BIND +
+        '\n',
+    })
+    const res = await trackedPost(ctx, '/deploy')
+    assertEquals(res.status, 403)
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+    const stored = await storedLastRead(ctx)
+    assertEquals(stored.lastReadCommitSha, STORED_SHA)
+    assertEquals(stored.lastReadDigest, STORED_DIGEST)
+  })
+})
+
+test('a deploy that names a commit reads the file at that commit and records it', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    ctx.app.post('/test/push-deploy/:id', (c) =>
+      runEnvironmentDeployForActor(c, ctx.db, ctx.commandQueue, c.req.param('id'), {
+        actorType: 'system',
+        actorId: crypto.randomUUID(),
+        organizationId: ctx.organizationId,
+        acknowledgeHealthCheckWarnings: true,
+        noCache: false,
+        selection: { ref: 'main', commitSha: SHA_OLD, sourceId: ctx.sourceId },
+      })
+    )
+    const res = await ctx.app.request(`/test/push-deploy/${ctx.environmentId}`, { method: 'POST' })
+    assertEquals(res.status, 200)
+    const { commandId } = (await res.json()) as { commandId: string }
+    assertEquals(
+      ctx.reads.map((read) => read.ref),
+      [SHA_OLD]
+    )
+    assertEquals(runtimeImage(await dispatchedPayload(ctx.db, commandId)), 'nginx:old')
+    assertEquals(checkoutOf(await dispatchedPayload(ctx.db, commandId))?.commitSha, SHA_OLD)
+    const [row] = await ctx.db
+      .select({ context: command.context })
+      .from(command)
+      .where(eq(command.id, commandId))
+      .limit(1)
+    assertEquals(
+      (row!.context as { composeBase: { commitSha: string } }).composeBase.commitSha,
+      SHA_OLD
+    )
+  })
+})
+
+test('a preview shows the branch-head Base and warns, without failing, when the file cannot be read', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    const headers = await trackedHeaders(ctx)
+    const ok = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview`, {
+      headers,
+    })
+    assertEquals(ok.status, 200)
+    const body = (await ok.json()) as {
+      composeFiles: Array<{ content: string }>
+      composeBase: { commitSha: string } | null
+      warnings: Array<{ code: string }>
+    }
+    assertEquals(body.composeBase?.commitSha, SHA_NEW)
+    assertEquals(body.composeFiles[0]?.content.includes('nginx:new'), true)
+    assertEquals(
+      body.warnings.some((w) => w.code === 'compose_base_unreadable'),
+      false
+    )
+
+    ctx.served.set('main', { message: 'provider down' })
+    const down = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview`, {
+      headers,
+    })
+    assertEquals(down.status, 200)
+    const fallback = (await down.json()) as {
+      composeFiles: Array<{ content: string }>
+      warnings: Array<{ code: string; message: string }>
+    }
+    assertEquals(
+      fallback.warnings.some((w) => w.code === 'compose_base_unreadable'),
+      true
+    )
+    assertEquals(fallback.composeFiles[0]?.content.includes('adminer'), true)
+    // A preview changes nothing.
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, STORED_SHA)
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+  })
+})
+
+test('a deploy of an environment that builds its own branch never stores that branch as the shared Base', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    ctx.served.set('staging', { commitSha: '5'.repeat(40), content: YAML_OLD })
+    await ctx.db
+      .update(environment)
+      .set({
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: {
+                web: { 'x-turbopanel': { source: { sourceId: ctx.sourceId, branch: 'staging' } } },
+              },
+            },
+            presentation: { keyOrder: [], comments: {} },
+          },
+        },
+      })
+      .where(eq(environment.id, ctx.environmentId))
+    const [before] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, ctx.projectId))
+      .limit(1)
+
+    await trackedPost(ctx, '/deploy')
+
+    // The environment's own branch is the one read.
+    assertEquals(ctx.reads[0]?.ref, 'staging')
+    // The project's stored Base and its last read are exactly as they were.
+    const [after] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, ctx.projectId))
+      .limit(1)
+    assertEquals(after!.options, before!.options)
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, STORED_SHA)
+  })
+})
+
+/** Deploy once as the first release of `web`, as the history would record it. */
+async function deployFirstRelease(
+  ctx: TrackedCtx,
+  context: (recorded: Record<string, unknown>) => Record<string, unknown>
+): Promise<void> {
+  const first = await trackedPost(ctx, '/deploy')
+  assertEquals(first.status, 200)
+  const firstId = ((await first.json()) as { commandId: string }).commandId
+  await transitionCommand(ctx.db, firstId, { status: 'succeeded' })
+  const [row] = await ctx.db
+    .select({ context: command.context })
+    .from(command)
+    .where(eq(command.id, firstId))
+    .limit(1)
+  await ctx.db
+    .update(command)
+    .set({
+      context: {
+        ...context(row!.context as Record<string, unknown>),
+        releases: [
+          {
+            composeServiceName: 'web',
+            releaseId: 'rel-old',
+            sourceId: ctx.sourceId,
+            commitSha: SHA_OLD,
+          },
+        ],
+      },
+    })
+    .where(eq(command.id, firstId))
+}
+
+const ROLLBACK_BODY = JSON.stringify({ composeServiceName: 'web', releaseId: 'rel-old' })
+
+test('a rollback reads the Base recorded on the release it returns to, never the latest read', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    ctx.served.set('main', { commitSha: SHA_OLD, content: YAML_OLD })
+    await deployFirstRelease(ctx, (recorded) => recorded)
+    // The project has since read a newer file.
+    ctx.served.set('main', { commitSha: SHA_NEW, content: YAML_NEW })
+    assertEquals((await trackedPost(ctx, '/deploy')).status, 200)
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, SHA_NEW)
+
+    ctx.reads.length = 0
+    const queued = ctx.commandQueue.envelopes.length
+    const rolled = await trackedPost(ctx, '/rollback', ROLLBACK_BODY)
+    // Read at the recorded commit, not the branch head and not the stored copy.
+    assertEquals(
+      ctx.reads.map((read) => read.ref),
+      [SHA_OLD]
+    )
+    // This fixture's service has no repository binding, so the release pin is
+    // refused later, in prepare: after the Base was read, before anything queued.
+    assertEquals(rolled.status, 422)
+    assertEquals(((await rolled.json()) as { error: string }).error, 'source_ref_unresolved')
+    assertEquals(ctx.commandQueue.envelopes.length, queued)
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, SHA_NEW)
+  })
+})
+
+test('a rollback to a release that recorded no Base is refused, not given the latest read', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    await deployFirstRelease(ctx, (recorded) => {
+      const { composeBase: _dropped, ...rest } = recorded
+      return rest
+    })
+    ctx.reads.length = 0
+    const rolled = await trackedPost(ctx, '/rollback', ROLLBACK_BODY)
+    assertEquals(rolled.status, 409)
+    assertEquals(((await rolled.json()) as { error: string }).error, 'rollback_base_unrecorded')
+    assertEquals(ctx.reads.length, 0)
   })
 })

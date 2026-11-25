@@ -25,15 +25,23 @@ the DuckDB addon at module evaluation and so needs the vendored `.so` on
   `/usr/bin/openssl` and `/usr/bin/hostname` on `--allow-run`, and with no
   `TURBOPANEL_TLS_CERTS_DIR` puts the leaf at `<state dir>/tls/certs` (inside
   `--allow-write`) instead of beside a repo root the binary does not have.
+  The script runs as root on a managed install while the certs folder belongs
+  to the instance account, so it never lets openssl or chmod touch a path in
+  that folder: openssl works in a private 0700 folder beside the platform CA
+  (which must be a real folder not writable by group or others), and results
+  are placed with an exclusive no-follow create plus an atomic rename (modes
+  set on the descriptor). It stops on a certs or CA folder that is a link, on a
+  `self-signed.*` link that is not the role's link to `platform-ca.*`, and on a
+  CA file that is a link.
 - The email consumer runs **in-process**
-  (`src/lib/email/mailer/deno-mailer-consumer.ts`, started from
+  (`src/features/email/mailer/deno-mailer-consumer.ts`, started from
   `src/platform/deno/server.ts` beside the command consumer, closed on SIGTERM). It
   used to be a separate `turbopanel-mailer` binary and unit whose one reason
   to exist was an unrestricted outbound `--allow-net` kept away from the
   instance; the instance binary carries that flag itself since the egress
   allowlist was dropped (2026-09-18), so the split bought nothing but a second
   ~470 MB binary. The RabbitMQ queue stays (durability, rate limiting); the
-  senders and job parser live in `src/lib/email/mailer/`. Only
+  senders and job parser live in `src/features/email/mailer/`. Only
   `src/platform/deno/server.ts` may import the consumer — it drags amqplib and the
   nodemailer SMTP sender into the graph, which the Workers build shims out.
 

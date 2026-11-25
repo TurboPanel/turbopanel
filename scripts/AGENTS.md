@@ -34,11 +34,12 @@ to move Node or Deno).
 **Reorg helpers** (do not glob tests; they rewrite inventories and layer
 imports):
 
-| Script | Purpose |
-| --- | --- |
-| `generate-test-lists.mjs` | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`) |
-| `set-identity-key.mjs` | `pnpm identity:set --env <env>`: generate the panel identity key in memory, pipe it to `wrangler secret put`, wait for the signed identity route, print the fingerprint (reuses `generate-identity-key.mjs`; tests inject wrangler, fetch and the clock) |
-| `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`) |
+| Script                        | Purpose                                                                                                                                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `generate-test-lists.mjs`     | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`)                                                                                                                                                                                |
+| `set-identity-key.mjs`        | `pnpm identity:set --env <env>`: generate the panel identity key in memory, pipe it to `wrangler secret put`, wait for the signed identity route, print the fingerprint (reuses `generate-identity-key.mjs`; tests inject wrangler, fetch and the clock) |
+| `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`)                                                                                                                                                                                |
+| `check-source-layout.mjs`     | Runtime code placement, file size, barrels and test names against `source-layout-baseline.json` (`pnpm check:source-layout`)                                                                                                                             |
 
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
@@ -163,7 +164,11 @@ The pre-commit hook (`.githooks/pre-commit`) runs the secret scan and then
 `scripts/` — the same whole-file check CI's format step runs.
 `TURBOPANEL_SKIP_HOOK_TESTS=1` does not skip it; `TURBOPANEL_SKIP_HOOK_FORMAT=1`
 does (for a change whose whole-file reflow goes in its own commit). Without a
-`node_modules` tree it skips with a message.
+`node_modules` tree it skips with a message. On a Vagrant or Incus host
+(`TURBOPANEL_DEV_ENV` in `<repos folder>/.turbopanel-dev-mode`) or a host with no
+`node` on `PATH`, the hook runs the secret scan only and says so in one line:
+the host needs no Node, and the guest and CI run the format check. The mode file
+is not in the guest, so the guest and a Direct machine with Node are unchanged.
 
 CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
 exclusion rules, and the coverage-attribution traps moved to
@@ -172,13 +177,12 @@ exclusion rules, and the coverage-attribution traps moved to
 when SonarCloud shows suspicious 0% coverage. Style rules Sonar enforces on
 everyday code live in `src/AGENTS.md` (**TypeScript style**).
 
-
-`scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
+`scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `../dev/src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
 
 #### `scripts/test-coverage.sh` is all-or-nothing without a local Postgres
 
 The script runs under `set -eu`: if the Vitest workers-pool step fails to
-even *start* (no `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`
+even _start_ (no `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`
 configured — `@cloudflare/vitest-pool-workers` refuses to boot the pool at
 all, not just skip the tests that need it), the **Deno suites never run
 either** — `pnpm test:coverage` exits non-zero having run nothing. Read

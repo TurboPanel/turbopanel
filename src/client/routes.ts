@@ -35,6 +35,7 @@ import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
 import { registerHostingComposeReleaseRoute } from './hostings/compose-release-route.ts'
+import { registerHostingRemoveNowRoute } from './hostings/remove-now-route.ts'
 import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
 import { registerTlsLeafRoutes } from './tls/leaf-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
@@ -53,6 +54,7 @@ import { registerDatacenterRoutes } from './datacenters/routes.ts'
 import { registerIpRoutes } from './ips/routes.ts'
 import { registerProjectRoutes } from './projects/routes.ts'
 import { registerServerRoutes } from './servers/routes.ts'
+import { registerTerminalRoutes } from './terminal/routes.ts'
 import { registerSystemRoutes } from './system/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
@@ -87,6 +89,25 @@ import { CLIENT_API_PREFIX } from '../app/surfaces.ts'
 export type ClientRouteOpts = AuthRouteOpts & {
   registerBilling?: (client: Hono<AppEnv>, opts: AuthRouteOpts) => void
   getOpenApiSpec?: (serverUrl: string, options?: ClientOpenApiOptions) => object
+}
+
+/**
+ * `/status` is the same for every caller (settings, platform env and billing
+ * presence only: no session, cookie or per-user field), so shared caches may
+ * hold it. A sign-up, email or sign-in provider change therefore reaches the
+ * sign-in screens after up to `max-age` (plus the revalidation window); the
+ * admin settings screens read their own admin endpoints, never this one.
+ */
+export const PUBLIC_STATUS_CACHE_CONTROL = 'public, max-age=30, stale-while-revalidate=60'
+
+/**
+ * Install mode (Deno) flips the moment the first admin is created and the
+ * console must see that at once, so it is never cached.
+ */
+export function statusCacheControl(payload: object): string {
+  return 'needsInstall' in payload && payload.needsInstall !== false
+    ? 'no-store'
+    : PUBLIC_STATUS_CACHE_CONTROL
 }
 
 /**
@@ -139,12 +160,13 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
     if (payload === null) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
-    return c.json(payload)
+    return c.json(payload, 200, { 'Cache-Control': statusCacheControl(payload) })
   })
 
   // Ahead of the generic server and organization routes, like principal defaults.
   registerPhpModeRoutes(client, opts)
   registerServerRoutes(client, opts)
+  registerTerminalRoutes(client, opts)
   registerSystemRoutes(client, opts)
   registerNetworkRoutes(client, opts)
   registerDatacenterRoutes(client, opts)
@@ -195,6 +217,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerHostingLetsEncryptRoutes(client, opts)
   registerHostingRoutes(client, opts)
   registerHostingComposeReleaseRoute(client, opts)
+  registerHostingRemoveNowRoute(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)

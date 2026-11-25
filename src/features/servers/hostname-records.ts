@@ -4,7 +4,7 @@
  * mirror, not a promotion, of `hosting.options.hostnames[]`.
  */
 
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
 import {
@@ -12,18 +12,37 @@ import {
   readPendingLetsEncrypt,
   pendingLetsEncryptPatch,
 } from '../hostings/hosting-certificate.ts'
-import { readHostingWwwMode } from '../hostings/hosting-options.ts'
+import type { HostnameCertificate } from '../hostings/name-certificate-vocabulary.ts'
+import {
+  parseHostingOptions,
+  readHostingWwwMode,
+  resolveHostingBind,
+  resolveHostingProtocol,
+} from '../hostings/hosting-options.ts'
+import { certificateForPinSource } from '../hostings/name-certificates.ts'
+import { loadDnsIssuance } from '../hostings/dns-issuance.ts'
+import { nameCertificateOptions } from '../hostings/name-certificate-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
-import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
+import {
+  type HostingWwwMode,
+  hostingCertificateNames,
+  wwwSiblingHostname,
+} from '../../contracts/commands/hostname.ts'
+
+/** A name's certificate choice a save sets (names not listed keep theirs). */
+export type HostnameChoice = { certificate: HostnameCertificate; tlsId: string | null }
 
 /**
- * Full-replace sync of a hosting's `hostname` rows, mirroring
- * `options.hostnames[]`'s own replace-whole-array write semantics, plus every
- * name the hosting's www choice adds ({@link hostingRoutingNames}, read from
- * the row just written). Call inside the same transaction as the `hosting`
- * write it mirrors (panel create/patch, compose reconcile), after that write.
+ * Diff sync of a hosting's `hostname` rows against `options.hostnames[]` plus
+ * every name the hosting's www choice adds ({@link hostingRoutingNames}, read
+ * from the row just written): rows for names no longer served are deleted,
+ * new names are inserted (following the site pin until a choice is made), and
+ * names that stay keep their row, so a per-name certificate choice survives
+ * every save. `choices` sets the choice of the named rows, existing or new.
+ * Call inside the same transaction as the `hosting` write it mirrors (panel
+ * create/patch, compose reconcile), after that write.
  *
  * When the names grew while the hosting is pinned to a Let's Encrypt row that
  * does not list them all, the same request the "Use Let's Encrypt" button makes
@@ -34,11 +53,13 @@ export async function replaceHostingHostnames(
   db: Db,
   hostingId: string,
   routingOrganizationId: string,
-  hostnames: readonly string[]
+  hostnames: readonly string[],
+  choices?: ReadonlyMap<string, HostnameChoice>
 ): Promise<void> {
   const [row] = await db
     .select({
       tlsId: hosting.tlsId,
+      serviceId: hosting.serviceId,
       options: hosting.options,
       metadata: hosting.metadata,
       pendingAt: hosting.pendingAt,
@@ -47,18 +68,136 @@ export async function replaceHostingHostnames(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   const www = readHostingWwwMode(row?.options)
+  const wanted = hostingRoutingNames(hostnames, www)
   // Typed names and the www names the choice adds alike: none may be a name
   // the panel serves. Throws, so the surrounding transaction rolls back.
-  await assertNotPanelHostnames(db, hostingRoutingNames(hostnames, www))
-  await db.delete(hostname).where(eq(hostname.hostingId, hostingId))
-  await forEachSequential(hostingRoutingNames(hostnames, www), (value) =>
-    db.insert(hostname).values({
+  await assertNotPanelHostnames(db, wanted)
+  const existing = await db
+    .select({
+      id: hostname.id,
+      hostname: hostname.hostname,
+      certificate: hostname.certificate,
+      tlsId: hostname.tlsId,
+    })
+    .from(hostname)
+    .where(eq(hostname.hostingId, hostingId))
+  const keep = new Set(wanted)
+  const gone = existing.filter((r) => !keep.has(r.hostname)).map((r) => r.id)
+  if (gone.length > 0) await db.delete(hostname).where(inArray(hostname.id, gone))
+  const present = new Set(existing.map((r) => r.hostname))
+  const added = wanted.filter((value) => !present.has(value))
+  const fallback =
+    added.length === 0
+      ? null
+      : await newNameFallback(db, added, routingOrganizationId, row, keepExisting(existing))
+  const typed = new Set(hostnames.map((value) => value.toLowerCase()))
+  const resolved = new Map<string, HostnameChoice>()
+  for (const r of existing) {
+    if (r.certificate !== null) {
+      resolved.set(r.hostname, {
+        certificate: r.certificate as HostnameCertificate,
+        tlsId: r.tlsId,
+      })
+    }
+  }
+  for (const [value, choice] of choices ?? []) resolved.set(value, choice)
+  await forEachSequential(added, (value) => {
+    const partner = wwwSiblingHostname(value)
+    const own = choices?.get(value)
+    const follows =
+      !own && !typed.has(value) && partner !== null ? resolved.get(partner) : undefined
+    const choice = own ?? follows ?? fallback!(value)
+    resolved.set(value, choice)
+    return db.insert(hostname).values({
       hostingId,
       routingOrganizationId,
       hostname: value,
+      certificate: choice.certificate,
+      tlsId: choice.tlsId,
     })
-  )
+  })
+  if (choices) {
+    await forEachSequential(
+      wanted.filter((value) => present.has(value) && choices.has(value)),
+      (value) => {
+        const choice = choices.get(value)!
+        return db
+          .update(hostname)
+          .set({ certificate: choice.certificate, tlsId: choice.tlsId })
+          .where(and(eq(hostname.hostingId, hostingId), eq(hostname.hostname, value)))
+      }
+    )
+  }
   if (row) await queueLetsEncryptRecheck(db, hostingId, row, letsEncryptNames(hostnames, www))
+}
+
+type ExistingName = { certificate: string | null; tlsId: string | null }
+
+function keepExisting(rows: readonly ExistingName[]): ExistingName[] {
+  return rows.map((r) => ({ certificate: r.certificate, tlsId: r.tlsId }))
+}
+
+/**
+ * The choice a new name gets when the request names none: never NULL. A site
+ * whose names all follow its pin (or that has no names yet) gives the new name
+ * what that pin stands for; a site whose names already differ has no single
+ * pin to follow, so the new name gets the default of the choice table for a
+ * name nothing carries yet.
+ */
+async function newNameFallback(
+  db: Db,
+  newNames: readonly string[],
+  organizationId: string,
+  row: { tlsId: string | null; serviceId: string; options: unknown } | undefined,
+  existing: readonly ExistingName[]
+): Promise<(name: string) => HostnameChoice> {
+  const pinId = row?.tlsId ?? null
+  let pinSource: string | null = null
+  if (pinId !== null) {
+    const [pin] = await db
+      .select({ source: tls.source })
+      .from(tls)
+      .where(eq(tls.id, pinId))
+      .limit(1)
+    pinSource = pin?.source ?? null
+  }
+  const sitePin = pinSource === null ? null : pinId
+  const sitePinChoice: HostnameChoice = {
+    certificate: certificateForPinSource(pinSource),
+    tlsId: sitePin,
+  }
+  const mixed = existing.some(
+    (r) =>
+      r.certificate !== null &&
+      (r.certificate !== sitePinChoice.certificate || r.tlsId !== sitePinChoice.tlsId)
+  )
+  if (sitePin !== null && !mixed) return () => sitePinChoice
+  const options = parseHostingOptions(row?.options)
+  // One read for every new name: the gate decides each name's DNS option.
+  const dnsGate = await loadDnsIssuance(db, organizationId, row ? [row.serviceId] : [])
+  const common = {
+    reach: 'direct' as const,
+    bind: resolveHostingBind(options),
+    isHttp: resolveHostingProtocol(options) === 'http',
+    acmeEnabled: dnsGate.acmeEnabled,
+    covering: [],
+  }
+  const byName = new Map(
+    newNames.map((name) => [
+      name,
+      {
+        certificate: nameCertificateOptions({
+          ...common,
+          hostname: name,
+          ...(row
+            ? dnsGate(row.serviceId, name)
+            : { dnsIssuance: false, dnsUnavailableReason: 'No server serves this name yet' }),
+        }).default,
+        tlsId: null,
+      } satisfies HostnameChoice,
+    ])
+  )
+  return (name) => byName.get(name)!
 }
 
 /**

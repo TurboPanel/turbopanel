@@ -11,7 +11,24 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,11 +83,189 @@ const caRetiredPath = path.join(path.dirname(caCrtPath), 'ca-retired.pem')
 const caSrlPath = path.join(path.dirname(caCrtPath), 'ca.srl')
 const crtPath = path.join(certsDir, 'self-signed.crt')
 const keyPath = path.join(certsDir, 'self-signed.key')
-const csrPath = path.join(certsDir, 'server.csr')
-const extPath = path.join(certsDir, 'server-ext.cnf')
 const certCommonName = 'TurboPanel Instance'
 const caCommonName = 'TurboPanel Platform CA'
 const days = '3650'
+
+// --- Safe writes -----------------------------------------------------------
+//
+// Root runs this script on a managed install while the certs folder belongs to
+// the instance account, so anyone who can write that folder can plant a link
+// where a file is about to be written. openssl `-out`/`-keyout` and chmod all
+// follow links. So nothing here lets openssl or chmod touch a path in a folder
+// somebody else can write: openssl works inside a private folder (mode 0700)
+// made next to the platform CA, and the result is placed with an exclusive,
+// no-follow create of a hidden temp name followed by an atomic rename. A rename
+// replaces a link at the target; it never follows it. Modes are set on the
+// open descriptor.
+
+const KEY_MODE = 0o640
+let workDirPath = ''
+
+function fail(message) {
+  cleanupWorkDir()
+  console.error(`generate-self-signed-cert: ${message}`)
+  process.exit(1)
+}
+
+/**
+ * Create the CA folder at 0750 when it is missing. Missing parents are made
+ * with the default mode; only the folder this script owns gets 0750.
+ */
+function ensureCaDir(dir) {
+  if (lstatOrNull(dir)) return
+  mkdirSync(path.dirname(dir), { recursive: true })
+  mkdirSync(dir, { mode: 0o750 })
+}
+
+function lstatOrNull(filePath) {
+  try {
+    return lstatSync(filePath)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null
+    throw err
+  }
+}
+
+/** Refuse a folder that is a link or not a folder (certs folder, owner varies). */
+function assertPlainDirectory(dir, label) {
+  const st = lstatOrNull(dir)
+  if (!st) return
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    fail(`${label} ${dir} is a link or not a folder; refusing to write through it`)
+  }
+}
+
+/**
+ * A private working folder (0700) inside the platform CA folder, which only
+ * root (managed) or the developer (co-located dev) may write.
+ */
+function getWorkDir() {
+  if (workDirPath) return workDirPath
+  const base = path.dirname(caCrtPath)
+  const before = lstatOrNull(base)
+  if (!before || before.isSymbolicLink() || !before.isDirectory()) {
+    fail(`platform CA folder ${base} is a link or not a folder; refusing to use it`)
+  }
+  if ((before.mode & 0o022) !== 0) {
+    fail(`platform CA folder ${base} is writable by group or others; refusing to use it`)
+  }
+  const created = mkdtempSync(path.join(base, '.tls-work-'))
+  const mine = lstatSync(created)
+  const after = lstatOrNull(base)
+  if (
+    !mine.isDirectory() ||
+    (before.uid !== 0 && before.uid !== mine.uid) ||
+    !after ||
+    after.ino !== before.ino ||
+    after.dev !== before.dev
+  ) {
+    rmSync(created, { recursive: true, force: true })
+    fail(
+      `platform CA folder ${base} is not owned as expected or changed underneath; refusing to use it`
+    )
+  }
+  workDirPath = created
+  return created
+}
+
+function cleanupWorkDir() {
+  if (!workDirPath) return
+  rmSync(workDirPath, { recursive: true, force: true })
+  workDirPath = ''
+}
+
+function workFile(name) {
+  return path.join(getWorkDir(), name)
+}
+
+/**
+ * Place `data` at `destPath` atomically. Secret files end at KEY_MODE; other
+ * files get the process umask applied to 0666, as an openssl `-out` did.
+ * An existing link at the target is replaced, never followed. With
+ * `strict`, an existing target that is a link or not a regular file is refused.
+ */
+function installFile(destPath, data, { secret = false, strict = false } = {}) {
+  const existing = lstatOrNull(destPath)
+  if (existing && (existing.isDirectory() || (strict && !existing.isFile()))) {
+    fail(`${destPath} is a link or not a regular file; refusing to replace it`)
+  }
+  const dir = path.dirname(destPath)
+  assertPlainDirectory(dir, 'target folder')
+  const tmp = path.join(dir, `.${path.basename(destPath)}.${randomBytes(8).toString('hex')}.tmp`)
+  const flags =
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW
+  const fd = openSync(tmp, flags, secret ? 0o600 : 0o666)
+  try {
+    const buf = Buffer.from(data)
+    let off = 0
+    while (off < buf.length) off += writeSync(fd, buf, off)
+    if (secret) fchmodSync(fd, KEY_MODE)
+    closeSync(fd)
+    renameSync(tmp, destPath)
+  } catch (err) {
+    try {
+      closeSync(fd)
+    } catch {
+      // already closed
+    }
+    rmSync(tmp, { force: true })
+    throw err
+  }
+}
+
+/** Mode 0640 on an existing key through its descriptor, never through a link. */
+function chmodKeyNoFollow(filePath) {
+  const before = lstatOrNull(filePath)
+  if (!before) return
+  if (before.isSymbolicLink() || !before.isFile()) {
+    fail(`${filePath} is a link or not a regular file; refusing to change its mode`)
+  }
+  let fd
+  try {
+    fd = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  } catch (err) {
+    fail(`${filePath} cannot be opened without following links: ${err?.code ?? err}`)
+  }
+  try {
+    // O_NOFOLLOW is not relied on alone: the opened file must be the one that
+    // was looked at, with no second name (hard link) pointing at it.
+    const opened = fstatSync(fd)
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.nlink !== 1
+    ) {
+      fail(`${filePath} changed underneath or has more than one name; refusing to change its mode`)
+    }
+    fchmodSync(fd, KEY_MODE)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * The deprecated leaf names are either files this script wrote or the links the
+ * instance-certs role makes to platform-ca.* beside them. Any other link stops
+ * the run before anything is read or written through it.
+ */
+function leafLinkState(filePath, ext) {
+  const st = lstatOrNull(filePath)
+  if (!st) return 'absent'
+  if (st.isSymbolicLink()) {
+    if (readlinkSync(filePath) === path.join(certsDir, `platform-ca.${ext}`)) return 'role-link'
+    fail(`${filePath} is a link to somewhere else; refusing to read or write through it`)
+  }
+  if (!st.isFile()) fail(`${filePath} is not a regular file; refusing to use it`)
+  return 'file'
+}
+
+function assertLeafNamesSafe() {
+  assertPlainDirectory(certsDir, 'certs folder')
+  leafLinkState(crtPath, 'crt')
+  leafLinkState(keyPath, 'key')
+}
 
 function normalizeIp(ip) {
   const lower = ip.toLowerCase()
@@ -201,7 +396,7 @@ function serverCertMarkedAsCa() {
     const out = execFileSync(
       '/usr/bin/openssl',
       ['x509', '-in', crtPath, '-noout', '-ext', 'basicConstraints'],
-      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } },
+      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } }
     )
     return /CA:\s*TRUE/i.test(out)
   } catch {
@@ -216,7 +411,7 @@ function readCertSubjectAltNames() {
     const out = execFileSync(
       '/usr/bin/openssl',
       ['x509', '-in', crtPath, '-noout', '-ext', 'subjectAltName'],
-      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } },
+      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } }
     )
     const sans = new Set()
     for (const match of out.matchAll(/(?:DNS|IP Address):([^,\n]+)/g)) {
@@ -234,22 +429,18 @@ function readCertSubjectAltNames() {
 }
 
 function removeServerLeafCert() {
-  for (const file of [crtPath, keyPath]) {
-    if (existsSync(file)) unlinkSync(file)
-  }
+  // rmSync removes a link itself (even a dangling one), never what it points at.
+  for (const file of [crtPath, keyPath]) rmSync(file, { force: true })
 }
 
-function removeTempServerFiles() {
-  for (const file of [csrPath, extPath]) {
-    if (existsSync(file)) unlinkSync(file)
-  }
-}
-
-/** Caddy reads keys as the instance-stack user — group must be able to read. */
+/**
+ * Caddy reads keys as the instance-stack user — group must be able to read.
+ * The leaf key is skipped while it is the role's link to platform-ca.key: that
+ * file is the role's to set, and the mode is not changed through a link.
+ */
 function normalizeTlsKeyPermissions() {
-  for (const file of [caKeyPath, keyPath]) {
-    if (existsSync(file)) chmodSync(file, 0o640)
-  }
+  chmodKeyNoFollow(caKeyPath)
+  if (leafLinkState(keyPath, 'key') === 'file') chmodKeyNoFollow(keyPath)
 }
 
 // A real open, not accessSync(R_OK): under the compiled instance binary
@@ -278,7 +469,7 @@ function decodeCertOrThrow(filePath) {
     })
   } catch {
     console.error(
-      `generate-self-signed-cert: existing platform CA at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`,
+      `generate-self-signed-cert: existing platform CA at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`
     )
     process.exit(1)
   }
@@ -292,7 +483,7 @@ function decodeKeyOrThrow(filePath) {
     })
   } catch {
     console.error(
-      `generate-self-signed-cert: existing platform CA key at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`,
+      `generate-self-signed-cert: existing platform CA key at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`
     )
     process.exit(1)
   }
@@ -310,32 +501,43 @@ function writeCaBundle() {
   }
   const parts = [current]
   if (retired) parts.push(retired)
-  mkdirSync(path.dirname(caBundlePath), { recursive: true })
-  writeFileSync(caBundlePath, `${parts.join('\n')}\n`)
+  ensureCaDir(path.dirname(caBundlePath))
+  installFile(caBundlePath, `${parts.join('\n')}\n`, { strict: true })
 }
 
 function mintPlatformCa() {
-  mkdirSync(path.dirname(caCrtPath), { recursive: true })
+  ensureCaDir(path.dirname(caCrtPath))
   console.log('generate-self-signed-cert: creating platform CA')
+  const workKey = workFile('ca.key')
+  const workCrt = workFile('ca.crt')
   execFileSync(
     '/usr/bin/openssl',
     [
       'req',
       '-x509',
-      '-newkey', 'rsa:2048',
+      '-newkey',
+      'rsa:2048',
       '-nodes',
-      '-keyout', caKeyPath,
-      '-out', caCrtPath,
-      '-days', days,
-      '-subj', `/O=TurboPanel/CN=${caCommonName}`,
-      '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
-      '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+      '-keyout',
+      workKey,
+      '-out',
+      workCrt,
+      '-days',
+      days,
+      '-subj',
+      `/O=TurboPanel/CN=${caCommonName}`,
+      '-addext',
+      'basicConstraints=critical,CA:TRUE,pathlen:0',
+      '-addext',
+      'keyUsage=critical,keyCertSign,cRLSign',
     ],
     {
       stdio: ['ignore', 'inherit', 'inherit'],
       env: opensslEnv(),
-    },
+    }
   )
+  installFile(caKeyPath, readFileSync(workKey), { secret: true, strict: true })
+  installFile(caCrtPath, readFileSync(workCrt), { strict: true })
   normalizeTlsKeyPermissions()
 }
 
@@ -346,11 +548,11 @@ function rotatePlatformCa() {
     : ''
   const retiredParts = [outgoing]
   if (existingRetired) retiredParts.push(existingRetired)
-  writeFileSync(caRetiredPath, `${retiredParts.join('\n')}\n`)
+  installFile(caRetiredPath, `${retiredParts.join('\n')}\n`, { strict: true })
   mintPlatformCa()
   writeCaBundle()
   console.log(
-    'generate-self-signed-cert: rotated platform CA; outgoing root appended to the retired list (bundle rewritten, current first)',
+    'generate-self-signed-cert: rotated platform CA; outgoing root appended to the retired list (bundle rewritten, current first)'
   )
 }
 
@@ -359,13 +561,13 @@ function ensureCa() {
   const keyState = inspectReadable(caKeyPath)
   if (crtState === 'unreadable' || keyState === 'unreadable') {
     console.error(
-      'generate-self-signed-cert: existing platform CA is present but unreadable; refusing to mint a replacement root',
+      'generate-self-signed-cert: existing platform CA is present but unreadable; refusing to mint a replacement root'
     )
     process.exit(1)
   }
   if (crtState !== keyState) {
     console.error(
-      'generate-self-signed-cert: incomplete platform CA pair (crt vs key); refusing to mint a replacement root',
+      'generate-self-signed-cert: incomplete platform CA pair (crt vs key); refusing to mint a replacement root'
     )
     process.exit(1)
   }
@@ -387,66 +589,93 @@ function ensureCa() {
 function generateServerCert(expectedSans) {
   const subject = `/O=TurboPanel/CN=${certCommonName}`
   const sans = `subjectAltName=${expectedSans.join(',')}`
+  const workKey = workFile('server.key')
+  const workCsr = workFile('server.csr')
+  const workCrt = workFile('server.crt')
+  const workExt = workFile('server-ext.cnf')
+  const workSrl = workFile('ca.srl')
 
-  console.log(
-    `generate-self-signed-cert: signing server cert (10y, ${expectedSans.join(', ')})`,
-  )
+  console.log(`generate-self-signed-cert: signing server cert (10y, ${expectedSans.join(', ')})`)
 
   execFileSync(
     '/usr/bin/openssl',
     [
       'req',
-      '-newkey', 'rsa:2048',
+      '-newkey',
+      'rsa:2048',
       '-nodes',
-      '-keyout', keyPath,
-      '-out', csrPath,
-      '-subj', subject,
-      '-addext', sans,
+      '-keyout',
+      workKey,
+      '-out',
+      workCsr,
+      '-subj',
+      subject,
+      '-addext',
+      sans,
     ],
     {
       stdio: ['ignore', 'inherit', 'inherit'],
       env: { ...process.env, PATH: '/usr/bin:/bin' },
-    },
+    }
   )
 
   writeFileSync(
-    extPath,
+    workExt,
     [
       '[server]',
       'basicConstraints=critical,CA:FALSE',
       'keyUsage=critical,digitalSignature,keyEncipherment',
       'extendedKeyUsage=serverAuth',
       '',
-    ].join('\n'),
+    ].join('\n')
   )
 
+  // The serial file is worked on inside the private folder and placed back
+  // afterwards, so openssl never opens it beside the CA.
+  const srlExists = existsSync(caSrlPath)
+  if (srlExists) writeFileSync(workSrl, readFileSync(caSrlPath))
   const signArgs = [
     'x509',
     '-req',
-    '-in', csrPath,
-    '-CA', caCrtPath,
-    '-CAkey', caKeyPath,
-    '-out', crtPath,
-    '-days', days,
-    '-copy_extensions', 'copy',
-    '-extfile', extPath,
-    '-extensions', 'server',
+    '-in',
+    workCsr,
+    '-CA',
+    caCrtPath,
+    '-CAkey',
+    caKeyPath,
+    '-out',
+    workCrt,
+    '-days',
+    days,
+    '-copy_extensions',
+    'copy',
+    '-extfile',
+    workExt,
+    '-extensions',
+    'server',
+    '-CAserial',
+    workSrl,
   ]
-  if (existsSync(caSrlPath)) {
-    signArgs.push('-CAserial', caSrlPath)
-  } else {
-    signArgs.push('-CAcreateserial')
-  }
+  if (!srlExists) signArgs.push('-CAcreateserial')
 
   execFileSync('/usr/bin/openssl', signArgs, {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { ...process.env, PATH: '/usr/bin:/bin' },
   })
 
-  removeTempServerFiles()
+  try {
+    installFile(caSrlPath, readFileSync(workSrl), { strict: true })
+    installFile(keyPath, readFileSync(workKey), { secret: true })
+    installFile(crtPath, readFileSync(workCrt))
+  } catch (err) {
+    removeServerLeafCert()
+    throw err
+  }
   normalizeTlsKeyPermissions()
   console.log(`generate-self-signed-cert: wrote ${crtPath}, ${keyPath}, and ${caCrtPath}`)
 }
+
+assertLeafNamesSafe()
 
 const expectedSans = subjectAltNames()
 const existingSans = readCertSubjectAltNames()
@@ -470,7 +699,7 @@ if (
 }
 
 mkdirSync(certsDir, { recursive: true })
-mkdirSync(path.dirname(caCrtPath), { recursive: true })
+ensureCaDir(path.dirname(caCrtPath))
 
 if (existsSync(crtPath) || existsSync(keyPath)) {
   let reason = 'interface addresses or DNS names changed'
@@ -489,7 +718,9 @@ try {
   ensureCa()
   generateServerCert(expectedSans)
 } catch (err) {
+  cleanupWorkDir()
   console.error(`generate-self-signed-cert: failed to generate certificate: ${err.message}`)
   console.error('generate-self-signed-cert: ensure openssl is installed at /usr/bin/openssl')
   process.exit(1)
 }
+cleanupWorkDir()

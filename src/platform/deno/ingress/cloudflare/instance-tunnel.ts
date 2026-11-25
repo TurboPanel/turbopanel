@@ -81,7 +81,14 @@ export async function readInstanceConnector(
     .where(eq(command.id, asked.commandId))
   if (answer?.status !== 'succeeded')
     return { connector: null, note: 'Waiting for the daemon to answer.' }
-  const result = parseTunnelStatusResult(answer.result)
+  // A report that did not fit its type is stored as null (see
+  // `resultSummaryForPersist`), which the parser rejects.
+  let result: ReturnType<typeof parseTunnelStatusResult>
+  try {
+    result = parseTunnelStatusResult(answer.result)
+  } catch {
+    return { connector: null, note: 'The daemon sent a tunnel status that could not be read.' }
+  }
   const entry = result.connectors.find((item) => item.tunnelId === 'instance')
   if (!entry)
     return { connector: null, note: 'No tunnel connector runs on the control plane host.' }

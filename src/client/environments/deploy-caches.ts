@@ -21,7 +21,6 @@ import { isSiteVariableName } from '../../features/hostings/hosting-options.ts'
 import type { ResolvedVariableMap } from '../../features/variables/resolve-inherited.ts'
 import type { Application } from '../../features/compose/ir.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { PROJECT_CACHE_FEATURE } from '../../lib/version-wire.ts'
 import { cacheConsumers, cacheConsumerWarningMessage } from '../../features/caches/consumers.ts'
 import { findCacheKeyConflicts } from '../../features/caches/conflicts.ts'
 import {
@@ -47,7 +46,6 @@ import {
 } from '../principals/tenancies.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { effectiveAccountLimits } from './account-limits.ts'
-import { storedDaemonFeatures } from './destroy-data.ts'
 
 /** What reaches the variable resolvers: per origin service, its caches and plain helper variables. */
 export type CacheDelivery = {
@@ -66,13 +64,13 @@ export type CacheOverrideWarning = { code: 'cache_variable_overrides'; key: stri
 
 export type ProjectCacheRefusal = {
   kind: 'project_cache_refused'
-  code: 'daemon_update_needed' | 'cache_key_conflict' | 'helper_reach_invalid'
+  code: 'cache_key_conflict' | 'helper_reach_invalid'
   message: string
 }
 
 export type PreparedProjectCaches = {
   delivery: CacheDelivery
-  /** Absent: leave the host's caches alone (an old daemon with none). */
+  /** Absent: leave the host's caches alone (no project caches prepared). */
   caches: EnvironmentDeployCache[] | undefined
   /** Absent: leave the host's reach list alone. */
   helperReach: EnvironmentDeployHelperReach[] | undefined
@@ -91,8 +89,6 @@ export const NO_PROJECT_CACHES: PreparedProjectCaches = {
   cacheConsumers: {},
   warnings: [],
 }
-
-const DAEMON_UPDATE_SENTENCE = 'Update the daemon on this server to use project caches'
 
 type ServiceRowLike = { id: string; composeServiceName: string }
 
@@ -185,14 +181,6 @@ export async function prepareProjectCaches(
   const decls = reachDecls(input.application, input.localReplicaCounts).filter(
     (decl) => input.localServiceNames === undefined || input.localServiceNames.has(decl.service)
   )
-  const features = await storedDaemonFeatures(db, input.serverId)
-  const here = rows.filter((row) => row.serverId === input.serverId)
-  if (!features.includes(PROJECT_CACHE_FEATURE)) {
-    if (here.length > 0 || decls.length > 0) {
-      return refusal('daemon_update_needed', DAEMON_UPDATE_SENTENCE)
-    }
-    return NO_PROJECT_CACHES
-  }
   const accounts = await serviceAccounts(db, input)
   const local = [...accounts].filter(
     ([name]) => input.localServiceNames === undefined || input.localServiceNames.has(name)

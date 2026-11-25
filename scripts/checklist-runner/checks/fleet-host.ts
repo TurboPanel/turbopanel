@@ -21,7 +21,7 @@ import {
 import { waitBackup, waitScheduledRun } from './managed.ts'
 
 const V1 = '/client/v1'
-const NO_HOST = 'needs --host <server> (not studio/adrastea/kore)'
+const NO_HOST = 'needs --host <server> (not a forbidden or shared-database host)'
 
 /** Run `script` as root: directly when the SSH user is root, else via `sudo -n`. */
 export function asRoot(script: string): string {

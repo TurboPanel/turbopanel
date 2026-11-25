@@ -28,7 +28,7 @@ export function describeReservedHostPorts(): string {
   )
 }
 
-function parseRange(text: string): [number, number] | undefined {
+export function parseRange(text: string): [number, number] | undefined {
   const [from, to = from] = text.trim().split('-')
   const lo = Number(from)
   const hi = Number(to)

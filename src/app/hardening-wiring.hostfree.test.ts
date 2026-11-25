@@ -6,8 +6,10 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { Hono } from 'hono'
 import { createApp } from './app.ts'
 import { CLIENT_API_PREFIX } from './surfaces.ts'
+import { createBrowserWriteProtectionMiddleware } from './browser-write-protection.ts'
 import { REQUEST_BODY_TOO_LARGE_CODE, DEFAULT_REQUEST_BODY_LIMIT_BYTES } from './body-limit.ts'
 import { WRITE_RATE_LIMITED_CODE } from './write-rate-limit.ts'
 import type { RateLimiter } from '../daemon/rate-limit/contracts.ts'
@@ -121,5 +123,63 @@ test('no spelling of a client path reaches a handler without passing the write g
   )
   for (const { path, status } of answers) {
     assertEquals([403, 404, 413, 429].includes(status), true, `${path} answered ${status}`)
+  }
+})
+
+// hono GHSA-h7mg-cq63-vhpq: RegExpRouter skipped wildcard middleware for a
+// path holding an encoded line terminator, so the `app.use('*', ...)` gates in
+// createApp never ran for it. The browser-write gate must still answer a
+// cross-origin write with exactly 403 (not a handler's 401/404/400). createApp's
+// large route set may select TrieRouter, which was never affected, so this is
+// a wiring guard; the small-app test below is the one that fails on old hono.
+const LINE_TERMINATOR_SPELLINGS = [
+  `${CLIENT_API_PREFIX}/servers%0A`,
+  `${CLIENT_API_PREFIX}/%0Aservers`,
+  `${CLIENT_API_PREFIX}/servers%0D`,
+  `${CLIENT_API_PREFIX}/servers%E2%80%A8`,
+  `${CLIENT_API_PREFIX}/servers%E2%80%A9`,
+  `${CLIENT_API_PREFIX}/servers%0A/extra`,
+]
+
+test('wildcard write gate runs for a path with an encoded line terminator', async () => {
+  const app = await buildApp()
+  const answers = await Promise.all(
+    LINE_TERMINATOR_SPELLINGS.map(async (path) => {
+      const res = await app.request(
+        new Request(`${ORIGIN}${path}`, {
+          method: 'POST',
+          headers: {
+            Origin: 'https://attacker.example',
+            'content-type': 'application/json',
+            'CF-Connecting-IP': '203.0.113.79',
+          },
+          body: '{}',
+        })
+      )
+      return { path, status: res.status }
+    })
+  )
+  for (const { path, status } of answers) {
+    assertEquals(status, 403, `${path} answered ${status}`)
+  }
+})
+
+// The same gate on a small app with the default router: few static routes keep
+// SmartRouter on RegExpRouter, the router the advisory is about. Before hono
+// 4.13.16 the gate was skipped for these paths and the request fell through to
+// the not-found handler (404) with no middleware run.
+test('write gate on a default-router app runs for a path with an encoded line terminator', async () => {
+  const app = new Hono()
+  app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+  app.post(`${CLIENT_API_PREFIX}/servers`, (c) => c.json({ ok: true }))
+  for (const path of LINE_TERMINATOR_SPELLINGS) {
+    const res = await app.request(
+      new Request(`${ORIGIN}${path}`, {
+        method: 'POST',
+        headers: { Origin: 'https://attacker.example' },
+        body: '{}',
+      })
+    )
+    assertEquals(res.status, 403, `${path} answered ${res.status}`)
   }
 })

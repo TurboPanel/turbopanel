@@ -1,5 +1,13 @@
 # Admin Surface (`src/admin/`)
 
+- `GET /organizations` (`organization-routes.ts`, `features/organizations/admin-list.ts`):
+  every organization, oldest first, in one statement with grouped counts:
+  `{ ok, organizations: [{ id, name, createdAt, owner: { id, name, email } | null,
+memberCount, serverCount, projectCount, isRoot }] }`. Admin or superadmin (the
+  admin gate). Deleting one is the client route `DELETE /organizations/:id`
+  (see `src/client/AGENTS.md`), which holds the same rules for a platform admin
+  (step-up, exact-name confirm, 409 while servers, tunnels or DNS records
+  remain, never the root); it is audited `organization.delete`.
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on
   both runtimes; gated to `superadmin` or `admin` via
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
@@ -10,7 +18,7 @@
   of any organization's ACME opt-in); the reads stay admin-gated but the
   writes (PUT hostnames, POST certificates, PATCH certificate hostnames, PUT
   acme) sit behind `createRootOnlyMiddleware` like public URLs and apply; `GET /instance/daemon` reports the
-  co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
+  co-located daemon's connection and version (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
   and the co-located daemon's `daemonBuild` beside each channel manifest target,
@@ -22,9 +30,8 @@
   (202 `{ ok, runId }`, 200 `{ ok, upToDate }`, 409 `run_active` / `paused` /
   `update_blocked`, 429 `check_too_soon` (once a minute), 503
   `release_unreachable`, 403 `development` on a development install; contract in
-  `src/features/upgrades/AGENTS.md`). The old manual
-  `POST /instance/updates/instance`, `/daemon` and the other start, retry and
-  cancel routes stay retired and answer 410 `updates_automatic`. Development installs only:
+  `src/features/upgrades/AGENTS.md`). There are no manual start, retry or
+  cancel routes (an update starts itself or with Update Now). Development installs only:
   `GET /instance/updates/development` and
   `POST /instance/updates/development/push` (`{ force?: boolean }`, 202 with the
   job, 409 `job_running` while one is active), superadmin, audited as
@@ -36,11 +43,11 @@
   `src/deno-dev.ts` while the developer surface is on, so they are absent (404)
   elsewhere and stay out of the admin spec; this file must never import
   `src/developer/*`. GET answers `{ ok, daemonBuild: { built: { commit,
-  buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
-  servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
-  }], job: null | { id, state: building | pushing | done | failed, startedAt,
-  endedAt, message, servers: [{ id, name, ok, skipped, error }] },
-  pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
+buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
+servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
+}], job: null | { id, state: building | pushing | done | failed, startedAt,
+endedAt, message, servers: [{ id, name, ok, skipped, error }] },
+pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
   restart forgets it). `host` is the co-located daemon's development host
   status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
   `src/developer/dev-host-status.ts`) with the control plane part's
@@ -61,8 +68,7 @@
   which also mounts `GET /api/developer/v1/dev-host/status` and the two
   actions for the Developer Console behind the developer access middleware; `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
-  `none` until the server pin column exists); `PUT /instance/identity/next` answers 410
-  `next_key_retired` on both runtimes (the offline next key is retired). Key changes are
+  `none` until the server pin column exists); there is no offline next key route. Key changes are
   `key-rotation-routes.ts`: `GET /instance/identity/rotation`, `POST /instance/identity/statements/prepare`
   (exact statement bytes + WebAuthn challenge), `POST /instance/identity/statements` (assertions, checked
   like a server checks them, then signed by the replaced key unless it is a revoke, and stored), `GET /instance/identity/statements/:keyset` (download) and
@@ -78,18 +84,7 @@
   configured primary hostname (409 `no_primary_hostname`; never the request's host), and Emergency
   Revoke always moves to a key made for it. `PUT /instance/hostnames` refuses (409
   `rotation_rp_id_hostname`) a primary hostname other than the marked passkeys' `rp_id`;
-  `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
-  reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`);
-  `DELETE /instance/identity/sealed-secrets/:serverId/key` is Clear Sealing Key
-  (superadmin, `?confirmName` = server name then hostname then id or 400
-  `confirm_name_required`, then step-up `server.sealing_key.clear`, audited as
-  `server.sealing_key.clear` with no notification event): it clears the three
-  `sealing_key_*` columns through `clearDaemonSealingKey`, answers
-  `{ ok, cleared }` (`cleared: false` when no key was on file), and refuses 409
-  `daemon_seals_secrets` while the server is connected with a hello listing
-  `daemon-sealed-secrets-v1` (that daemon would refuse plaintext; the update
-  checks the same condition and the key id again, so a daemon that connects
-  after the read keeps its key); the self-hosted
+  the self-hosted
   tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
   `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read

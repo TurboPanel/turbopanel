@@ -1,7 +1,6 @@
 import { assertEquals } from '@std/assert'
-import { ACME_ISSUE_FEATURE, ACME_ISSUE_ONE_CERT_FEATURE } from '../../../lib/version-wire.ts'
 import { isHttpOrderable } from './orchestrator.ts'
-import { orderNamesFor, takesOrderFor } from './names.ts'
+import { orderNamesFor } from './names.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -46,16 +45,6 @@ test('a wildcard or an empty row is not ordered over the web check', () => {
   assertEquals(isHttpOrderable([]), false)
   assertEquals(isHttpOrderable(['*.example.com']), false)
   assertEquals(isHttpOrderable(['example.com', 'www.example.com']), true)
-})
-
-test('several names go only to a daemon that gets one certificate for all of them', () => {
-  const old = [ACME_ISSUE_FEATURE]
-  const current = [ACME_ISSUE_FEATURE, ACME_ISSUE_ONE_CERT_FEATURE]
-  assertEquals(takesOrderFor(old, ['example.com']), true)
-  assertEquals(takesOrderFor(old, ['example.com', 'www.example.com']), false)
-  assertEquals(takesOrderFor(current, ['example.com', 'www.example.com']), true)
-  assertEquals(takesOrderFor([ACME_ISSUE_ONE_CERT_FEATURE], ['example.com']), false)
-  assertEquals(takesOrderFor([], ['example.com']), false)
 })
 
 test('names are folded the same way everywhere, an international name as punycode', () => {

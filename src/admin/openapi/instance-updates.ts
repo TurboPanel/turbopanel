@@ -2,26 +2,6 @@ import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 
 const cookieSecurity = [{ cookieAuth: [] }] as const
 
-/** A route that used to start, retry or cancel an update by hand. */
-function retired(summary: string) {
-  return {
-    post: {
-      tags: ['Instance'],
-      summary,
-      description:
-        'Retired: updates are automatic. Always answers 410 `updates_automatic` with a ' +
-        '`message`; start one at once with `POST /instance/updates/now`, or stop them with ' +
-        '`POST /instance/updates/pause` / `resume`.',
-      security: [...cookieSecurity],
-      responses: {
-        '401': { description: 'Unauthorized' },
-        '403': { description: 'Forbidden — requires admin or superadmin role' },
-        '410': { description: '`updates_automatic`' },
-      },
-    },
-  }
-}
-
 /** A POST control route; `responses` adds to (or replaces) the 401 and 403 answers. */
 function postRoute(
   summary: string,
@@ -82,7 +62,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'self-hosted control plane its own or the UI update), `nextCheckAt` and ' +
         '`lastCheckAt` (the hourly check, at a minute of the hour drawn once per ' +
         'install; `lastCheckAt` also counts Check Now), `checkIntervalMinutes` (60, or ' +
-        'less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set on a test install), ' +
+        'less where the `upgradeCheck` job cadence is overridden, as on a test install), ' +
         '`activeRunId` and `controlPlaneRecovery` (`{ runId, backupPath, rollbackCommand }` ' +
         'for a waiting self-hosted control-plane or UI update, the run id the next ' +
         'automatic run uses; otherwise null). `updateWaiting` counts only what a run would act on. Each is one `limit 1` read. ' +
@@ -107,7 +87,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'upgrade tick once every server in the current one has finished or ' +
         'failed. Settings belong to this environment. With nothing saved, ' +
         '`batch` is every server at once (100%) unless the environment sets ' +
-        '`TURBOPANEL_UPGRADE_BATCH`. A row saved by an older control plane keeps ' +
+        '`TURBOPANEL_UPGRADE_BATCH`. A stored row keeps ' +
         'its batch; its `autoUpdate` and maintenance window are ignored.',
       security: [...cookieSecurity],
       responses: {
@@ -146,11 +126,6 @@ export const INSTANCE_UPDATES_PATHS = {
     'Lifts the pause; the next hourly check starts what is waiting. Recorded in the activity ' +
       'log (`upgrade.resume`) when a pause was in force.'
   ),
-  [`${ADMIN_API_PREFIX}/instance/updates/instance`]: retired(
-    'Retired: start the control-plane update by hand'
-  ),
-  [`${ADMIN_API_PREFIX}/instance/updates/preflight`]: retired('Retired: pre-flight an update'),
-  [`${ADMIN_API_PREFIX}/instance/updates/runs`]: retired('Retired: start an update run'),
   [`${ADMIN_API_PREFIX}/instance/updates/check`]: postRoute(
     'Check Now: look for the newest build',
     'A refresh only. Asks the release servers for the newest build (skipping the ' +
@@ -191,12 +166,6 @@ export const INSTANCE_UPDATES_PATHS = {
       '429': { description: '`check_too_soon`' },
       '503': { description: '`release_unreachable`, or the database is unavailable' },
     }
-  ),
-  [`${ADMIN_API_PREFIX}/instance/updates/steps/{id}/retry`]: retired(
-    'Retired: retry an update step (failed servers are retried automatically)'
-  ),
-  [`${ADMIN_API_PREFIX}/instance/updates/runs/{id}/cancel`]: retired(
-    'Retired: cancel an update run (use Pause all updates)'
   ),
   [`${ADMIN_API_PREFIX}/instance/updates/run`]: {
     get: {
@@ -278,7 +247,4 @@ export const INSTANCE_UPDATES_PATHS = {
       },
     },
   },
-  [`${ADMIN_API_PREFIX}/instance/updates/daemon`]: retired(
-    'Retired: start the daemon update by hand'
-  ),
 }

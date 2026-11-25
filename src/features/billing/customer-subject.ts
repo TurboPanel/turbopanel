@@ -2,7 +2,7 @@
  * How a provider customer names the TurboPanel subject it pays for.
  *
  * Stripe's `Customer` carries free-form `metadata`; this instance writes one
- * of two keys on every customer it creates (next phase), and the webhook
+ * of two keys on every customer it creates, and the webhook
  * projection reads them back to decide which `payer` row a customer is.
  * Exactly one must be present — `payer_subject_check` enforces the same
  * rule at the table.
@@ -15,8 +15,7 @@ export const STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY = 'turbopanel_organizatio
 export const STRIPE_CUSTOMER_USER_METADATA_KEY = 'turbopanel_user_id'
 
 export type PayerSubject =
-  | { organizationId: string; userId: null }
-  | { organizationId: null; userId: string }
+  { organizationId: string; userId: null } | { organizationId: null; userId: string }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

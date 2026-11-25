@@ -22,9 +22,9 @@ import type { Db } from '../../db/connection.ts'
 import { command, secret, server, tunnel } from '../../db/schema.ts'
 import { resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { TUNNEL_CONNECTOR_FEATURE } from '../../lib/version-wire.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { TunnelConnectorsCommandPayload } from '../../contracts/commands/tunnel-connectors.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
@@ -148,7 +148,7 @@ type ServerReady =
 
 /**
  * Why a server cannot be sent a connector list right now (unknown, offline,
- * daemon too old, daemon key unusable), or null when it can.
+ * daemon key unusable), or null when it can.
  */
 export async function connectorServerProblem(
   db: Db,
@@ -178,10 +178,7 @@ async function checkServerReady(
   if (!row) return skip('unknown server')
   if (!row.isConnected) return skip('server offline')
   const state = await getServerDaemonStateByServerId(db, serverId)
-  if (state?.projection?.features?.includes(TUNNEL_CONNECTOR_FEATURE) !== true) {
-    return skip('daemon too old')
-  }
-  if (!state.key || !isDaemonKeyActive(state.key)) return skip('daemon key unavailable')
+  if (!state?.key || !isDaemonKeyActive(state.key)) return skip('daemon key unavailable')
   return { ok: true, metadata: row.metadata, keyId: state.key.id }
 }
 
@@ -199,12 +196,13 @@ async function loadLastSend(db: Db, state: SentState) {
  * One that did not finish waits out the gap before it is sent again, so a list
  * the server keeps refusing is not sealed and sent on every tick.
  */
-function isAlreadyCurrent(
+export function isAlreadyCurrent(
   sent: SentState | null,
   last: { status: string } | undefined,
   installHash: string,
   remove: readonly string[],
-  nothingToDo: boolean
+  nothingToDo: boolean,
+  nowMs: number = Date.now()
 ): boolean {
   if (sent === null) return nothingToDo
   if (sent.stateHash !== installHash) return false
@@ -215,9 +213,9 @@ function isAlreadyCurrent(
   if (confirmed) return true
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   if (last && open.includes(last.status)) {
-    return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_STALE_MS
+    return nowMs - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_STALE_MS
   }
-  return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_RESEND_GAP_MS
+  return gapStillRunning(nowMs - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_RESEND_GAP_MS)
 }
 
 /**

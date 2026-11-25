@@ -461,7 +461,7 @@ export async function reconcileBackupsAfterCopyChange(
  * reconcile was already created since its `status_changed_at`, including a
  * policy write's own.
  *
- * Runs from the Workers cron and the Deno maintenance timer, never from
+ * Runs from the Workers cron and the Deno job tick, never from
  * hello or a Durable Object handler (those must not enqueue).
  */
 export async function runBackupsReconcileSweep(

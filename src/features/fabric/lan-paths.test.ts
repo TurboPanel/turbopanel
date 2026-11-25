@@ -1,8 +1,7 @@
 /**
  * Trusted LAN wins, against a real Postgres: two servers on a shared trusted
  * datacenter network have no tunnel between them (not peers, LAN routes
- * instead), an older daemon keeps today's tunnel, an untrusted LAN carries
- * the tunnel, cross-server networks reach servers outside a running mesh with
+ * instead), an untrusted LAN carries the tunnel, cross-server networks reach servers outside a running mesh with
  * a payload that has no tunnel, the address ladder never aims at a fabric
  * address for a LAN pair or a dead tunnel, and the container range migration
  * backfills from relays. Skipped without TURBOPANEL_DATABASE_URL, the way
@@ -89,7 +88,7 @@ async function insertServer(db: TestDb, organizationId: string, name: string): P
 async function seedLan(db: TestDb, organizationId: string, a: string, b: string): Promise<string> {
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, name: 'rack-a', addressPreference: 'ipv4' })
+    .values({ organizationId, name: 'rack-a', addressPreference: 'ipv4', isTrusted: true })
     .returning({ id: datacenter.id })
   const datacenterId = dc!.id
   const [lan] = await db
@@ -276,19 +275,6 @@ test('a member whose only partners share its trusted LAN gets no tunnel', async 
   })
 })
 
-test('a pair with an older daemon keeps its tunnel over the LAN', async () => {
-  await withRig(async (rig) => {
-    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.b))
-    const alpha = await payloadFor(rig, rig.a)
-    const bravoPeer = alpha.peers.find((peer) => peer.publicKey === KEY_B)
-    assertEquals(bravoPeer?.endpoint, '10.0.0.2:51821')
-    assertEquals(bravoPeer?.pathKind, 'direct_lan')
-    assertEquals(alpha.lanRoutes, [])
-    const bravo = await payloadFor(rig, rig.b)
-    assertEquals('tunnel' in bravo || 'lanRoutes' in bravo, false)
-  })
-})
-
 test('marking the LAN untrusted re-plans: the pair peers again and the tunnel runs over that LAN', async () => {
   await withRig(async (rig) => {
     const before = await networking(rig)
@@ -393,15 +379,6 @@ test('the ladder never aims at a fabric address for a LAN pair or over a dead tu
       purpose: 'client-backend',
     })
     assertEquals('transport' in remote ? remote.transport : remote, 'fabric')
-
-    // The same LAN pair with an older daemon still has a live tunnel, so it takes it.
-    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.b))
-    const olderPair = await resolvePrivateEndpoint(rig.db, {
-      fromServerId: rig.a,
-      toServerId: rig.b,
-      purpose: 'client-backend',
-    })
-    assertEquals('transport' in olderPair ? olderPair.transport : olderPair, 'fabric')
 
     // A stale handshake means the tunnel is down: never aim at its tp0 address.
     const stale = new Date(Date.now() - 600_000).toISOString()
@@ -568,51 +545,12 @@ test('marking the LAN untrusted is allowed while TurboFabric runs for both serve
   })
 })
 
-test('the deploy re-check refuses a pair whose daemon stopped routing over the LAN while TurboFabric is off', async () => {
-  await withRig(async (rig) => {
-    const networks = [{ key: 'app', serverIds: [rig.a, rig.b] }]
-    assertEquals(
-      await findDeployLanPairRefusal(rig.db, { organizationId: rig.organizationId, networks }),
-      null
-    )
-    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.b))
-    // TurboFabric on: the tunnel carries the pair.
-    assertEquals(
-      await findDeployLanPairRefusal(rig.db, { organizationId: rig.organizationId, networks }),
-      null
-    )
-    await turnFabricOff(rig)
-    const refusal = await findDeployLanPairRefusal(rig.db, {
-      organizationId: rig.organizationId,
-      networks,
-    })
-    assertEquals(refusal?.networks, [{ id: 'app', label: 'container network "app"' }])
-    // The TurboFabric page names the network the missing path cuts.
-    await addContainerNetwork(rig, [rig.a, rig.b])
-    const pairs = await loadFabricPairs(rig.db, {
-      organizationId: rig.organizationId,
-      fabric: null,
-    })
-    const ab = pairs.find(
-      (row) => [row.fromServerId, row.toServerId].sort().join() === [rig.a, rig.b].sort().join()
-    )
-    assertEquals(ab?.path, 'none')
-    assertEquals(
-      ab?.reason,
-      'TurboFabric is off and these servers share a trusted network but a daemon is too old to route container networks over it, so they have no private path for container networks. Cut between them: container network "app".'
-    )
-  })
-})
-
 test('the WireGuard port stays closed on a server whose payload has no tunnel', async () => {
   await withRig(async (rig) => {
     assertEquals((await loadFabricExposures(rig.db, rig.a)).length, 1)
     await rig.db.update(server).set({ isFabricEnabled: false }).where(eq(server.id, rig.c))
     assertEquals((await payloadFor(rig, rig.a)).tunnel, false)
     assertEquals(await loadFabricExposures(rig.db, rig.a), [])
-    // An older daemon has no tunnel field and keeps the tunnel: the port stays open.
-    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.a))
-    assertEquals((await loadFabricExposures(rig.db, rig.a)).length, 1)
   })
 })
 

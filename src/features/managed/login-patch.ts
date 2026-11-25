@@ -7,11 +7,7 @@
  * statements by kind instead of printing them.
  */
 
-import {
-  DATABASE_ADMIN_PRIVILEGE,
-  evaluateDatabaseAdminGrant,
-  type ReadWriteGrantState,
-} from './owner-role.ts'
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
 import {
   type DatabaseLoginRole,
   isLoginGrantMode,
@@ -110,17 +106,6 @@ function applyAdminDefaults(
 ): void {
   patch.privileges = [DATABASE_ADMIN_PRIVILEGE]
   if (input.tool === undefined && !current.tool) patch.tool = true
-}
-
-/** A login's stored mode and levels, for the daemon rule on the read/write level. */
-export function readWriteGrantState(
-  settings: Pick<LoginSettings, 'grantMode' | 'privileges' | 'databases'>
-): ReadWriteGrantState {
-  return {
-    grantMode: settings.grantMode,
-    privileges: settings.privileges,
-    databases: settings.databases,
-  }
 }
 
 /** Refusals that come from a manage-myself login, or from moving one onto PostgreSQL's read-only default. */

@@ -154,7 +154,11 @@ export async function loadBillingOrgView(
   const { ledger } = state.subscription
     ? await readPendingChanges(db, organizationId, state.subscription.providerSubscriptionId)
     : {
-        ledger: { version: 2 as const, providerSubscriptionId: '', intents: [] },
+        ledger: {
+          version: 2 as const,
+          providerSubscriptionId: '',
+          intents: [],
+        },
       }
   return { state, licenses, servers, ledger, reserved, heldKeys }
 }
@@ -180,11 +184,6 @@ export type TierSummary = Readonly<{
    * mint gate refuses.
    */
   available: number
-  /**
-   * @deprecated Use `ending`. Kept one release for the console: every seat
-   * leaving the tier at the boundary, a pending downgrade's included.
-   */
-  releasing: number
   priceCents: number | null
   currency: string | null
 }>
@@ -193,7 +192,6 @@ export type TierSummary = Readonly<{
 export function summarizeTiers(view: BillingOrgView): TierSummary[] {
   const orgAvailable = summarizeLicenses(view).available
   const seats = seatQuantitiesByTier(view.state)
-  const releases = outstandingReleasesByTier(view.ledger)
   const ending = endingLicensesByTier(view.ledger)
   const inUse = new Map<string, number>()
   for (const server of view.servers) {
@@ -220,7 +218,6 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
         orgAvailable,
         Math.max(0, purchased - (endingHere?.count ?? 0) - used - held)
       ),
-      releasing: releases.get(seat.tierId) ?? 0,
       priceCents: seat.tier.priceCents,
       currency: seat.tier.currency,
     })
@@ -246,8 +243,7 @@ export type LicenseSummary = Readonly<{
   endsAt: string | null
   /**
    * Active licenses held, bound or waiting to connect: `inUse + unusedKeys`.
-   * @deprecated for display — show `inUse` and `unusedKeys`; it stays the
-   * number the mint gate subtracts.
+   * Internal: the number the mint gate subtracts, never sent on the wire.
    */
   held: number
   /** What the console calls "in use": `bound + provisioning`. */
@@ -332,7 +328,12 @@ export function licensesEndingRefusal(
 ): LicensesEndingRefusal | null {
   const ending = endingLicensesByTier(ledger).get(tierId)
   if (!ending || ending.count === 0) return null
-  return { error: LICENSES_ENDING_ERROR, tierId, ending: ending.count, endsAt: ending.endsAt }
+  return {
+    error: LICENSES_ENDING_ERROR,
+    tierId,
+    ending: ending.count,
+    endsAt: ending.endsAt,
+  }
 }
 
 /** `Oct 26` for an ISO instant, in UTC (the boundary Stripe bills on). */
@@ -377,7 +378,7 @@ function endingPart({ ending, endsAt }: ExhaustionSummary): string | null {
  * mint gate's arithmetic (`purchased` minus what is held). What is held is
  * `inUse + unusedKeys`: a bound license is always an active one (both come
  * from one `countActiveLicenses` query), so `bound <= held` and the two
- * display fields sum to the deprecated `held` exactly.
+ * display fields sum to `held` exactly.
  */
 function changingTierCount(summary: ExhaustionSummary): number {
   const held = summary.inUse + summary.unusedKeys
@@ -609,9 +610,15 @@ export function serializeTier(row: TierRow) {
   }
 }
 
-/** {@link LicenseSummary} minus the fields that are internal plumbing. */
-function publicLicenseSummary(summary: LicenseSummary): Omit<LicenseSummary, 'granted'> {
-  const { granted: _granted, ...rest } = summary
+/**
+ * {@link LicenseSummary} minus the fields that are internal plumbing: the
+ * grant, and the `releasing` and `held` totals the mint gate subtracts (the
+ * console reads `ending`, `inUse` and `unusedKeys`).
+ */
+function publicLicenseSummary(
+  summary: LicenseSummary
+): Omit<LicenseSummary, 'granted' | 'releasing' | 'held'> {
+  const { granted: _granted, releasing: _releasing, held: _held, ...rest } = summary
   return rest
 }
 

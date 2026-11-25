@@ -1,15 +1,13 @@
 /**
  * Build the `public-urls-update` body for the co-located daemon.
  *
- * A daemon below `instance-cert-sources-per-hostname` receives the flat
- * `urls` list only. Capable daemons also receive each hostname's source and,
- * for `uploaded`, the certificate plus its key: sealed to the daemon as
- * `keyEnvelope` when `sealing` is set (the daemon advertises
- * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
- * A daemon that lists `instance-hostname-public-port-v1` in `daemonFeatures`
- * also receives `publicPort`, but only on `cloudflare-tunnel` hostnames: the
- * daemon redirects other ports to it, and on a direct, proxied or uploaded
- * name ports 80 and 443 belong to hosting and may serve a different site.
+ * The daemon receives each hostname's source and, for `uploaded`, the
+ * certificate plus its key, sealed to the daemon as `keyEnvelope` (the daemon
+ * must advertise `sealed-instance-secrets-v1`; the key is never sent as
+ * plaintext). It also receives `publicPort`, but
+ * only on `cloudflare-tunnel` hostnames: the daemon redirects other ports to
+ * it, and on a direct, proxied or uploaded name ports 80 and 443 belong to
+ * hosting and may serve a different site.
  */
 
 import { inArray } from 'drizzle-orm'
@@ -30,12 +28,8 @@ import {
   listInstanceHostnames,
   wireCertificateSource,
 } from '../features/install/instance-hostnames.ts'
-import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
+import { resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
-import {
-  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
-  resolveDaemonCapabilities,
-} from '../lib/version-wire.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 
@@ -52,8 +46,6 @@ export class PublicUrlsApplyPayloadError extends Error {
 
 /** Optional inputs to {@link resolvePublicUrlsApplyPayload}. */
 export type PublicUrlsApplyPayloadOptions = {
-  /** Wire features the co-located daemon advertises (gates `publicPort`). */
-  daemonFeatures?: readonly string[]
   /** Clock for the DNS-01 certificate source; defaults to now. */
   now?: number
 }
@@ -69,18 +61,12 @@ export async function colocatedDaemonFeatures(
 
 export async function resolvePublicUrlsApplyPayload(
   db: Db,
-  urls: string[],
-  daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
   sealing: InstanceSecretSealing | null = null,
   options: PublicUrlsApplyPayloadOptions = {}
 ): Promise<PublicUrlsApplyPayload> {
-  const { daemonFeatures = [], now = Date.now() } = options
-  const capable =
-    resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
-  if (!capable) return { urls }
-
+  const { now = Date.now() } = options
   // A DNS-01 name travels as `uploaded` with its issued pair, or as
   // `platform-ca` before its first certificate and after it expires. An
   // HTTP-01 name travels under the daemon's own name, `lets-encrypt`.
@@ -96,12 +82,11 @@ export async function resolvePublicUrlsApplyPayload(
     ),
   ]
   const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing)
-  const sendPublicPort = daemonFeatures.includes(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE)
   const hostnames: InstanceHostnameWireEntry[] = rows.map((row) => {
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
       source: row.source,
-      ...(sendPublicPort && row.mode === 'cloudflare-tunnel' ? { publicPort: row.publicPort } : {}),
+      ...(row.mode === 'cloudflare-tunnel' ? { publicPort: row.publicPort } : {}),
     }
     if (row.source !== 'uploaded' || !row.uploadedCertId) return entry
     const pair = decrypted.get(row.uploadedCertId)
@@ -112,13 +97,13 @@ export async function resolvePublicUrlsApplyPayload(
       ...entry,
       uploadedCertId: row.uploadedCertId,
       certPem: pair.certPem,
-      ...pair.key,
+      keyEnvelope: pair.keyEnvelope,
     }
   })
   const letsEncrypt = hostnames.some((entry) => entry.source === 'lets-encrypt')
-  if (!letsEncrypt) return { urls, hostnames }
+  if (!letsEncrypt) return { hostnames }
   const instanceAcme = await loadInstanceAcme(db, env)
-  return { urls, hostnames, instanceAcme }
+  return { hostnames, instanceAcme }
 }
 
 async function loadInstanceAcme(
@@ -142,12 +127,12 @@ async function loadInstanceAcme(
 
 type UploadedPair = {
   certPem: string
-  key: { keyEnvelope: string } | { keyPem: string }
+  keyEnvelope: string
 }
 
 /**
- * With `sealing`, the at-rest `tpsecret` key is re-sealed straight to the
- * daemon (`keyEnvelope`) and never exists as plaintext in the payload.
+ * The at-rest `tpsecret` key is re-sealed straight to the daemon
+ * (`keyEnvelope`) and never exists as plaintext in the payload.
  */
 async function loadUploadedPairs(
   db: Db,
@@ -162,6 +147,11 @@ async function loadUploadedPairs(
       'data encryption secrets are required to apply an uploaded certificate'
     )
   }
+  if (!sealing) {
+    throw new PublicUrlsApplyPayloadError(
+      'the co-located daemon does not open sealed instance secrets; upgrade it to apply an uploaded certificate'
+    )
+  }
   const rows = await db
     .select({
       id: instanceUploadedCertificate.id,
@@ -173,17 +163,13 @@ async function loadUploadedPairs(
   // Each row is sealed/decrypted on its own; nothing is shared between them.
   const pairs = await Promise.all(
     rows.map(async (row): Promise<[string, UploadedPair]> => {
-      const key = sealing
-        ? {
-            keyEnvelope: await resealSecretForDaemon(
-              sealing.secretsConfig,
-              secrets,
-              sealing.recipient,
-              row.keyPem
-            ),
-          }
-        : { keyPem: await decryptSecret(secrets, row.keyPem) }
-      return [row.id, { certPem: row.certPem, key }]
+      const keyEnvelope = await resealSecretForDaemon(
+        sealing.secretsConfig,
+        secrets,
+        sealing.recipient,
+        row.keyPem
+      )
+      return [row.id, { certPem: row.certPem, keyEnvelope }]
     })
   )
   for (const [id, pair] of pairs) out.set(id, pair)

@@ -1,5 +1,4 @@
 import { eq } from 'drizzle-orm'
-import { MANAGED_OWNER_ROLE_FEATURE } from '../../lib/version-wire.ts'
 import { effectiveManagedImage } from './releases.ts'
 import type { Context } from 'hono'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
@@ -443,13 +442,6 @@ async function buildCredentials(
     return { kind: 'daemon_key_unavailable', serverId }
   }
 
-  // A daemon older than owner roles does not know the Database admin login
-  // (on any engine) and would ignore it, leaving a login with no rights. It gets the same login as a
-  // read/write login instead (the answer to the request says so), never a
-  // refusal and never more than read/write.
-  const daemonKnowsAdmin = (daemonState.projection?.features ?? []).includes(
-    MANAGED_OWNER_ROLE_FEATURE
-  )
   const credentials: ManagedApplyCommandPayload['credentials'] = []
   const failure = await firstSequential(rows, async (row) => {
     // The replication login is attached separately when multi-member.
@@ -485,8 +477,7 @@ async function buildCredentials(
     }
     const privileges = row.privileges
     if (privileges.length > 0) {
-      credential.privileges =
-        !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
+      credential.privileges = privileges
     }
     // Only `self` goes on the wire: the daemon treats `recipe` and an absent
     // mode alike, so payloads for panel-set logins stay as they were.

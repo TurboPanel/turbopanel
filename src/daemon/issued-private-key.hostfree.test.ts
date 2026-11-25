@@ -39,12 +39,10 @@ test('an envelope sealed to the panel with its identity key id as aad is opened'
   })
 })
 
-test('plain PEM still works and exactly one of the two fields is required', async () => {
+test('plain PEM is refused, with or without an envelope, and an envelope is required', async () => {
   const id = await identity()
-  assertEquals(await resolveIssuedPrivateKey({ privateKeyPem: KEY_PEM }, null), {
-    ok: true,
-    privateKeyPem: KEY_PEM,
-  })
+  const plain = await resolveIssuedPrivateKey({ privateKeyPem: KEY_PEM }, id)
+  assert(!plain.ok && plain.status === 400)
   const both = await resolveIssuedPrivateKey(
     { privateKeyPem: KEY_PEM, privateKeyEnvelope: await sealedFor(id, id.current.kid) },
     id
@@ -52,6 +50,9 @@ test('plain PEM still works and exactly one of the two fields is required', asyn
   assert(!both.ok && both.status === 400)
   const neither = await resolveIssuedPrivateKey({}, id)
   assert(!neither.ok && neither.status === 400)
+  for (const result of [plain, both, neither]) {
+    assert(!JSON.stringify(result).includes('PRIVATE KEY'))
+  }
 })
 
 test('a wrong aad, a foreign key id, a bad shape or no identity never opens or echoes the key', async () => {

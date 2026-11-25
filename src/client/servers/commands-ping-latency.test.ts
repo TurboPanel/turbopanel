@@ -34,7 +34,6 @@ function pingRecord(
     errorCode: null,
     errorMessage: null,
     errorLine: null,
-    error: null,
     ...partial,
   }
 }

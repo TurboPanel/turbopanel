@@ -3,6 +3,7 @@
  * decision trees that do not need a Hono Context or live DB client.
  */
 
+import { parseBuildLimitSettingsInput } from '../../features/deploy/build-limits.ts'
 import {
   formatServerOsDisplay,
   parseServerOptions,
@@ -105,11 +106,16 @@ export type ServerPatchFields = {
   name?: string | null
   /** Pins `server.machine_class`; `null` clears the pin so ingest infers again. */
   machineClass?: ServerMachineClass | null
-  options?: Omit<ServerOptions, 'sshPort' | 'ntp' | 'hideWebServerNames' | 'sendViaHeader'> & {
+  options?: Omit<
+    ServerOptions,
+    'sshPort' | 'ntp' | 'hideWebServerNames' | 'sendViaHeader' | 'networkShares'
+  > & {
     sshPort?: number | null
     ntp?: NtpDefaults | null
     hideWebServerNames?: boolean | null
     sendViaHeader?: boolean | null
+    /** `null` turns the setting off (the stored value is dropped to false). */
+    networkShares?: boolean | null
   }
   /**
    * The request's `location` as parsed: fields to set, `null` fields to clear,
@@ -120,6 +126,23 @@ export type ServerPatchFields = {
   /** The override to store (`null` removes `options.location`). */
   location?: LocationFields | null
   updatedAt: string
+}
+
+/**
+ * What a PATCH does to Allow Network Shares: whether it was on and will be on,
+ * and the time to stamp (`since`) when it turns on from anything but on.
+ */
+export function networkSharesChange(
+  previous: ServerOptions | null | undefined,
+  patchOptions: ServerPatchFields['options'],
+  at: string
+): { before: boolean; after: boolean; since?: string } {
+  const before = previous?.networkShares === true
+  const after =
+    patchOptions !== undefined && 'networkShares' in patchOptions
+      ? patchOptions.networkShares === true
+      : before
+  return { before, after, ...(!before && after ? { since: at } : {}) }
 }
 
 export type ServerRouteValidationError = {
@@ -183,9 +206,33 @@ function overlayWebServerSwitch(
   return null
 }
 
+const CLIENT_PATCHABLE_SERVER_OPTION_KEYS = [
+  'timezone',
+  'hosting',
+  'sshPort',
+  'ntp',
+  'hideWebServerNames',
+  'sendViaHeader',
+  'networkShares',
+  'buildLimits',
+] as const satisfies readonly (keyof ServerOptions)[]
+
+function pickClientPatchableOptions(
+  parsed: ServerOptions
+): NonNullable<ServerPatchFields['options']> {
+  const options: NonNullable<ServerPatchFields['options']> = {}
+  for (const key of CLIENT_PATCHABLE_SERVER_OPTION_KEYS) {
+    if (parsed[key] !== undefined) Object.assign(options, { [key]: parsed[key] })
+  }
+  return options
+}
+
 /**
- * Overlay sshPort / ntp / hideWebServerNames / sendViaHeader onto parsed server
- * options. `null` clears inherit.
+ * Build the PATCH options from client input: only the keys in
+ * `CLIENT_PATCHABLE_SERVER_OPTION_KEYS` (timezone, hosting, sshPort, ntp,
+ * hideWebServerNames, sendViaHeader, networkShares, buildLimits) are kept, then
+ * sshPort / ntp / the two web server switches / networkShares / buildLimits are
+ * validated and overlaid. `null` clears inherit. Other keys are dropped.
  */
 function parseServerPatchOptions(
   raw: unknown
@@ -194,14 +241,14 @@ function parseServerPatchOptions(
   if (!isRecord(raw) || parsed === null) {
     return invalidServerPatchRequest()
   }
-  const options: NonNullable<ServerPatchFields['options']> = { ...parsed }
-  // The location override changes only through the explicit `location` field;
-  // `options` is merged into the stored blob, so leaving `location` out of it
-  // keeps the stored override.
-  delete options.location
-  // Likewise the external-access setting: it only changes through its own route,
-  // which also tells the server.
-  delete options.managedExternalAccess
+  // An allow-list, not a spread: `parseServerOptions` also reads keys the
+  // control plane owns (`cellLocationHint`, `cellGeneration`,
+  // `metricsCapabilityPlan`, `networkSharesSince`) and keys with their own
+  // route (`location`, `managedExternalAccess`, `terminal`, `tunnels`,
+  // `phpModes`). Anything not listed here is dropped, as unknown
+  // keys always were. `options` is merged into the stored blob, so a dropped
+  // key leaves the stored value as it was.
+  const options = pickClientPatchableOptions(parsed)
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {
@@ -220,6 +267,19 @@ function parseServerPatchOptions(
     overlayWebServerSwitch(options, raw, 'hideWebServerNames') ??
     overlayWebServerSwitch(options, raw, 'sendViaHeader')
   if (switchError) return switchError
+  if ('networkShares' in raw) {
+    // Off by default and never inherited: only a boolean (or null for off).
+    if (raw.networkShares !== null && typeof raw.networkShares !== 'boolean') {
+      return { ok: false, error: 'Invalid networkShares', status: 400 }
+    }
+    options.networkShares = raw.networkShares
+  }
+  if ('buildLimits' in raw) {
+    // Replaces the stored object; `{}` or `null` clears every part.
+    const buildLimits = parseBuildLimitSettingsInput(raw.buildLimits)
+    if (!buildLimits.ok) return { ok: false, error: buildLimits.error, status: 400 }
+    options.buildLimits = buildLimits.value
+  }
   return { ok: true, options }
 }
 
@@ -464,6 +524,10 @@ export type ServerHostDefaultsFields = {
   /** Effective Via header: this server's setting, else the organization's, else off. */
   sendViaHeader: boolean
   sendViaHeaderSource: string | null
+  /** Whether this server allows SMB network share volumes (off unless set; no inheritance). */
+  networkShares: boolean
+  /** This server's own build limits (`null` parts are not set); see `features/deploy/build-limits.ts`. */
+  buildLimits: { cores: number | null; memoryBytes: number | null; swap: boolean | null }
 }
 
 export function resolveServerTimezoneFields(
@@ -501,6 +565,12 @@ export function resolveServerHostDefaultsFields(
     hideWebServerNamesSource: hide.source,
     sendViaHeader: via.sendViaHeader,
     sendViaHeaderSource: via.source,
+    networkShares: serverOptions?.networkShares === true,
+    buildLimits: {
+      cores: serverOptions?.buildLimits?.cores ?? null,
+      memoryBytes: serverOptions?.buildLimits?.memoryBytes ?? null,
+      swap: serverOptions?.buildLimits?.swap ?? null,
+    },
   }
 }
 

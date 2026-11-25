@@ -22,7 +22,7 @@ const NOW = 1_800_000_000_000
 function facts(carrier: string): RoutingFacts {
   return {
     tunnels: [{ carrying: [carrier], doorways: [] }],
-    addresses: new Map([[carrier, ['10.0.0.1']]]),
+    addresses: new Map([[carrier, { datacenters: { dc1: ['10.0.0.1'] }, public: [] }]]),
   }
 }
 

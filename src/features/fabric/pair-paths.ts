@@ -2,8 +2,8 @@
  * How each pair of servers in the organization talks, in plain words, for the
  * TurboFabric page (`GET /organizations/:id/fabric` `pairs`).
  *
- * - `lan`: they share a trusted datacenter network and both daemons route over
- *   it, so there is no tunnel between them.
+ * - `lan`: they share a trusted datacenter network with an IPv4 address on
+ *   both ends, so there is no tunnel between them.
  * - `fabric`: a TurboFabric tunnel carries their traffic.
  * - `fabric_over_untrusted_lan`: the tunnel runs over a shared network marked
  *   untrusted (encrypted over the LAN).
@@ -140,14 +140,6 @@ function tunnelPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
       'Same trusted network, but it has no IPv4 address on both servers: TurboFabric runs over the LAN.'
     )
   }
-  if (sharedNetworks(ctx, a, b).trusted.length > 0) {
-    return row(
-      a,
-      b,
-      'fabric',
-      'Same trusted network, but a daemon is too old to skip the tunnel: TurboFabric runs over the LAN until both servers are updated.'
-    )
-  }
   return row(a, b, 'fabric', 'Different datacenter networks: traffic goes through TurboFabric.')
 }
 
@@ -156,9 +148,6 @@ function noLanReason(ctx: PairContext, a: string, b: string): string {
   const blocker = trustedLanBlocker(a, b, lanPairInputs(ctx.caches))
   if (blocker === 'no_ipv4') {
     return 'their shared trusted network has no IPv4 address on both servers'
-  }
-  if (sharedNetworks(ctx, a, b).trusted.length > 0) {
-    return 'these servers share a trusted network but a daemon is too old to route container networks over it'
   }
   return 'these servers are on different datacenter networks'
 }
@@ -287,7 +276,6 @@ export async function loadFabricPairs(
       [...lanInputs.membershipsByServer].map(([id, pins]) => [id, [...pins]])
     ),
     policyByDatacenter: new Map(lanInputs.policiesByDatacenter),
-    lanRouteServerIds: lanInputs.lanRouteServerIds,
   }
   const ctx: PairContext = {
     fabric: params.fabric,

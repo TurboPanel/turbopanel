@@ -3,7 +3,7 @@
  * Postgres-only; never cell/DO reads.
  */
 
-import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   type PrivateEndpointError,
@@ -17,7 +17,12 @@ import {
   type ManagedReplicationHealth,
   parseManagedSlotRetention,
 } from '../../contracts/commands/schemas.ts'
-import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
+import {
+  ageReplicationHealth,
+  REPLICA_DISPLAY_REFRESH_MS,
+  REPLICA_DISPLAY_STALE_MS,
+  type ReplicationHealthView,
+} from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -324,7 +329,12 @@ export function serializeManagedMemberForDisplay(
     const display = parseDisplayReplicationHealth(row.metadata)
     const forDisplay = selectReplicationForDisplay(measured, display)
     if (forDisplay !== undefined) {
-      out.replication = ageReplicationHealth(forDisplay, nowMs)
+      // A pushed reading is rewritten only every few minutes when nothing
+      // changed, so it gets the longer window; a probe reading keeps 120 s.
+      out.replication =
+        forDisplay === display
+          ? ageReplicationHealth(forDisplay, nowMs, REPLICA_DISPLAY_STALE_MS)
+          : ageReplicationHealth(forDisplay, nowMs)
     }
   }
   return out
@@ -905,6 +915,34 @@ export async function updateManagedMemberObservedReplication(
 }
 
 /**
+ * What counts as a change between two display readings (SQL, applied to the
+ * stored and the incoming reading alike). Left out: the observation time and
+ * the WAL / GTID positions, which move on every report. Lag numbers are
+ * compared in buckets (bytes per 1 MiB, seconds per 10 s) so jitter does not
+ * force a write; a real write still stores the exact values. A stored value
+ * that is not an object is compared as it is.
+ */
+function displayChangeKey(reading: SQL): SQL {
+  // Field names and sizes are fixed constants below, never input, so they are
+  // written into the statement as literals rather than bound as parameters.
+  const bucket = (key: string, size: number) => {
+    const field = sql.raw("'" + key + "'")
+    const width = sql.raw(String(size))
+    return sql`CASE WHEN jsonb_typeof(${reading} -> ${field}) = 'number'
+      THEN floor((${reading} ->> ${field})::numeric / ${width}) END`
+  }
+  return sql`(CASE WHEN jsonb_typeof(${reading}) = 'object'
+    THEN (${reading} - 'observedAt' - 'receivedLsn' - 'replayLsn'
+        - 'receivedGtid' - 'executedGtid'
+        - 'lagBytes' - 'receiveLagBytes' - 'lagSeconds')
+      || jsonb_strip_nulls(jsonb_build_object(
+        'lagBytes', ${bucket('lagBytes', 1_048_576)},
+        'receiveLagBytes', ${bucket('receiveLagBytes', 1_048_576)},
+        'lagSeconds', ${bucket('lagSeconds', 10)}))
+    ELSE ${reading} END)`
+}
+
+/**
  * Store a health report's replication reading in a display-only field
  * (`metadata.replicationDisplay`), separate from the probe-measured field
  * (`metadata.replication`) so the promote gate and automatic failover continue
@@ -917,19 +955,35 @@ export async function updateManagedMemberObservedReplication(
 export async function updateManagedMemberDisplayReplication(
   db: Db,
   memberId: string,
-  displayReplication: ManagedReplicationHealth
+  displayReplication: ManagedReplicationHealth,
+  options: { nowMs?: number; refreshMs?: number } = {}
 ): Promise<void> {
+  const nowIso = new Date(options.nowMs ?? Date.now()).toISOString()
+  const refreshSeconds = (options.refreshMs ?? REPLICA_DISPLAY_REFRESH_MS) / 1000
+  const reading = JSON.stringify(displayReplication)
+  const stored = sql`(metadata -> 'replicationDisplay')`
+  const incoming = sql`(${reading}::jsonb)`
   try {
+    // The skip is decided in the same statement: a reading whose change key
+    // equals the stored one, and whose stored copy is younger than the refresh
+    // interval, matches no row, so nothing is written and nothing extra is read.
     await db.execute(
       sql`
         UPDATE ${replica}
         SET metadata = jsonb_set(
           COALESCE(metadata, '{}'::jsonb),
           '{replicationDisplay}',
-          ${JSON.stringify(displayReplication)}::jsonb
+          ${reading}::jsonb
         ),
         updated_at = NOW()
         WHERE id = ${memberId}::uuid
+          AND (
+            ${stored} IS NULL
+            OR ${stored} ->> 'observedAt' IS NULL
+            OR ${displayChangeKey(stored)} IS DISTINCT FROM ${displayChangeKey(incoming)}
+            OR (${stored} ->> 'observedAt')::timestamptz
+              <= ${nowIso}::timestamptz - make_interval(secs => ${refreshSeconds})
+          )
       `
     )
   } catch (error) {

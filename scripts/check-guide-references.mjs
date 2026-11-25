@@ -9,8 +9,9 @@
  *
  * Two kinds of pointer are read:
  *   - markdown links `[text](relative/path)`, resolved relative to the guide;
- *   - backticked paths that start with `./` or `../`, or that are repo-root
- *     paths ending in `.md`. The guides write `../<repo>/...` relative to the
+ *   - backticked paths that start with `./` or `../`, that are repo-root
+ *     paths ending in `.md`, or that start with a repo-root folder
+ *     (`src/`, `scripts/`, `docs/`, `.github/`). The guides write `../<repo>/...` relative to the
  *     repo root, so a backticked path passes when it exists relative to the
  *     guide OR relative to the repo root.
  * `#anchors` are stripped; http(s)/mailto links and anchor-only links are
@@ -95,10 +96,15 @@ export function stripFences(text) {
     .join('\n')
 }
 
-function looksLikeBacktickedPath(token) {
+/** Checkouts that sit beside this repo; a pointer into one is skipped when it is absent (CI). */
+const SIBLING_REPOS = new Set(['turbopaneld', 'ui', 'dev', 'website', '.github'])
+const ROOT_FOLDERS = ['src/', 'scripts/', 'docs/', '.github/']
+
+export function looksLikeBacktickedPath(token) {
   if (token.includes('...') || /[\s<>*{}|…$():]/.test(token)) return false
   const bare = token.replace(/[#?].*$/, '')
   if (bare.startsWith('./') || bare.startsWith('../')) return true
+  if (ROOT_FOLDERS.some((folder) => bare.startsWith(folder))) return true
   return bare.includes('/') && bare.endsWith('.md') && !bare.startsWith('/')
 }
 
@@ -139,7 +145,7 @@ export function resolveReference({ kind, target, file, repoRoot, exists, allowli
   const siblingAbsent = candidates.some((c) => {
     const rel = path.relative(repoRoot, c).split(path.sep)
     return (
-      rel[0] === '..' && rel[1] && rel[1] !== '..' && !exists(path.resolve(repoRoot, '..', rel[1]))
+      rel[0] === '..' && SIBLING_REPOS.has(rel[1]) && !exists(path.resolve(repoRoot, '..', rel[1]))
     )
   })
   return { status: siblingAbsent ? 'skipped-sibling' : 'missing' }

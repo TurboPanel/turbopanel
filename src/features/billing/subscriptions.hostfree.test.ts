@@ -206,9 +206,13 @@ test('createCustomerForOrganization writes the metadata key the projection reads
   const out = await createCustomerForOrganization(client, {
     organizationId: 'org-1',
     email: 'o@example.com',
+    name: 'Org One',
     idempotencyKey: 'customer:org-1',
   })
   assertEquals(out.providerCustomerId, 'cus_9')
+  assertEquals(client.calls[0]!.path, '/v1/customers')
+  assertEquals(formOf(client.calls[0]!, 'email'), 'o@example.com')
+  assertEquals(formOf(client.calls[0]!, 'name'), 'Org One')
   assertEquals(formOf(client.calls[0]!, 'metadata[turbopanel_organization_id]'), 'org-1')
   assertEquals(client.calls[0]!.idempotencyKey, 'customer:org-1')
 })

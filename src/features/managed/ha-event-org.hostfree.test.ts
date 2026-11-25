@@ -88,7 +88,6 @@ test('the same event from an org-A member server passes the gate (control)', asy
       reporterServerId: SERVER_A,
       signature: 'verified',
       binding: {
-        reporterBindsInstance: async () => false,
         primaryDial: async () => null,
         reporterPrivateHosts: async () => [],
       },

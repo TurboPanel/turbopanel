@@ -24,9 +24,11 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
   pollServerTunnelStatus,
+  readAskedState,
   runTunnelStatusPollTick,
   TUNNEL_STATUS_NEW_PORTAL_GAP_MS,
 } from './status-poll.ts'
+import { markPeerLeafReminted, peerHopStatusOf, recordTunnelStatus } from './status.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
@@ -149,13 +151,6 @@ const answer = (externalId: string) => ({
   connectors: [{ tunnelId: externalId, status: 'connected', version: '2026.5.2', slot: 'a' }],
 })
 
-test('a server whose daemon does not advertise tunnel-status-v1 is not asked', async () => {
-  await withServer({ features: [] }, async (c) => {
-    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'skipped')
-    assertEquals(c.queued.length, 0)
-  })
-})
-
 test('one question is sent and the next waits for its answer', async () => {
   await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'asked')
@@ -173,6 +168,26 @@ test('a question that was never answered is asked again once it is stale', async
     await pollServerTunnelStatus(c.db, c.queue, await c.row())
     await ageQuestion(c.db, c.serverId)
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'asked')
+    assertEquals(c.queued.length, 2)
+  })
+})
+
+test('an answered question is asked again on the slot ten minutes on, with a few seconds of jitter', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    await pollServerTunnelStatus(c.db, c.queue, await c.row())
+    await c.db
+      .update(command)
+      .set({ status: 'succeeded', resultSummary: answer(c.externalId) })
+      .where(eq(command.id, c.queued[0]!.commandId))
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'recorded')
+    const sentAt = Date.parse(readAskedState((await c.row()).metadata)!.sentAt)
+
+    // The slot five minutes on: still inside the gap.
+    const half = sentAt + 5 * 60_000 + 7_000
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), half), 'waiting')
+    // The slot ten minutes on, the last run having been a few seconds into its slot: asked.
+    const slot = sentAt + 10 * 60_000 - 15_000
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), slot), 'asked')
     assertEquals(c.queued.length, 2)
   })
 })
@@ -281,5 +296,65 @@ test('the sweep asks the connected servers that carry a tunnel, and does nothing
       asked: 0,
       recorded: 0,
     })
+  })
+})
+
+test('a connected server that only receives peer traffic is asked too, once per gap', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    // A site-only server: no portal, but it was sent a forwarding table.
+    const [org] = await c.db
+      .select({ id: server.organizationId })
+      .from(server)
+      .where(eq(server.id, c.serverId))
+    const [site] = await c.db
+      .insert(server)
+      .values({
+        organizationId: org!.id,
+        name: 'Site Only',
+        isConnected: true,
+        daemon: { projection: { features: [TUNNEL_STATUS_FEATURE] } },
+        metadata: { tunnelRoutes: { stateHash: 'h', commandId: 'c', sentAt: 'x', forwarded: 0 } },
+      })
+      .returning({ id: server.id })
+    await c.db.insert(key).values({
+      serverId: site!.id,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    })
+    try {
+      await runTunnelStatusPollTick(c.db, c.queue)
+      const asked = () => c.queued.filter((e) => e.serverId === site!.id).length
+      assertEquals(asked(), 1)
+      // Inside the gap nothing more is sent for it.
+      await runTunnelStatusPollTick(c.db, c.queue)
+      assertEquals(asked(), 1)
+    } finally {
+      await c.db.delete(command).where(eq(command.serverId, site!.id))
+      await c.db.delete(key).where(eq(key.serverId, site!.id))
+      await c.db.delete(server).where(eq(server.id, site!.id))
+    }
+  })
+})
+
+test('a report with no connectors still records the peer hop, and a repeat only moves its time', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    const report = { pinnedVersion: '2026.6.0', connectors: [], peerClientAuth: 'verify' as const }
+    await recordTunnelStatus(c.db, c.serverId, {
+      ...report,
+      peerClientAuthDowngraded: true,
+    })
+    await markPeerLeafReminted(c.db, c.serverId)
+    const first = (await c.row()).metadata as { tunnelPeerHop: { reportedAt: string } }
+    assert(typeof first.tunnelPeerHop.reportedAt === 'string')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await recordTunnelStatus(c.db, c.serverId, { ...report, peerClientAuthDowngraded: true })
+    const again = (await c.row()).metadata as {
+      tunnelPeerHop: { reportedAt: string; reminted?: boolean }
+    }
+    assert(again.tunnelPeerHop.reportedAt > first.tunnelPeerHop.reportedAt)
+    // The re-mint flag survives a repeat of the same report.
+    assertEquals(again.tunnelPeerHop.reminted, true)
+    assertEquals(peerHopStatusOf(again), { clientAuth: 'verify', downgraded: true })
   })
 })

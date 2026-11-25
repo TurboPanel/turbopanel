@@ -5,6 +5,7 @@ import { resolveWorkersMailpitApiBaseUrl } from '../mailpit/env.ts'
 import { sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
+import { mailgunConfigFromSettings } from './config.ts'
 import { sendMailgunJob } from './send.ts'
 import { EmailSendError } from '../workers-mail-queue.ts'
 
@@ -71,44 +72,15 @@ export async function resolveWorkersEmailQueue(
   env: Record<string, string | undefined>,
   dataEncryptionSecrets?: DerivedSecretsConfig
 ): Promise<EmailQueue> {
-  const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets)
-  return emailQueueFromResolvedSettings(resolved)
-}
-
-/**
- * Build a Workers email queue from already-resolved settings.
- *
- * Callers that also need the verification gate (sign-up) should resolve
- * settings once, then use this helper so gate and queue stay aligned.
- */
-export function emailQueueFromResolvedSettings(
-  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>
-): EmailQueue {
-  const workersProvider = resolved.provider
-  if (workersProvider === 'mailpit-api') {
+  const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets, 'workers')
+  if (resolved.provider === 'mailpit-api') {
     const apiBaseUrl = resolveWorkersMailpitApiBaseUrl(resolved.keys.MAILPIT_API_URL.value)
-    if (apiBaseUrl === undefined) {
-      return createNoopQueue()
-    }
-    return createWorkersMailpitQueue({
-      apiBaseUrl,
-      from: resolved.from,
-    })
+    if (apiBaseUrl === undefined) return createNoopQueue()
+    return createWorkersMailpitQueue({ apiBaseUrl, from: resolved.from })
   }
-  if (workersProvider !== 'mailgun') {
-    return createNoopQueue()
-  }
+  if (resolved.provider !== 'mailgun') return createNoopQueue()
 
-  const apiKey = resolved.mailgunApiKey?.trim() ?? ''
-  const domain = resolved.mailgunDomain?.trim() ?? ''
-  if (apiKey === '' || domain === '') {
-    return createNoopQueue()
-  }
-
-  return createWorkersMailgunQueue({
-    apiKey,
-    domain,
-    from: resolved.from,
-    apiBase: resolved.mailgunApiBase,
-  })
+  const config = mailgunConfigFromSettings(resolved)
+  if (config === undefined) return createNoopQueue()
+  return createWorkersMailgunQueue(config)
 }

@@ -8,21 +8,12 @@
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db/connection.ts'
-import {
-  ADMIN_API_PREFIX,
-  CLIENT_API_PREFIX,
-  GITHUB_WEBHOOK_PATH,
-  HEALTH_PATH,
-} from './app/surfaces.ts'
+import { ADMIN_API_PREFIX, CLIENT_API_PREFIX, HEALTH_PATH } from './app/surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
 } from './platform/workers/workers-bindings.ts'
-import workers, {
-  getLazyEmailQueueResolveCallsForTests,
-  getWorkerAppRoutePathsForTests,
-  resetWorkerAppCachesForTests,
-} from './workers.ts'
+import workers, { getWorkerAppRoutePathsForTests, resetWorkerAppCachesForTests } from './workers.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
 
 function mockDb(label: string): Db {
@@ -130,6 +121,71 @@ describe('workers.ts entry handlers', () => {
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
+  it('fetch sets Server-Timing on /status, with init on the first request only', async () => {
+    const statusUrl = `https://panel.example.com${CLIENT_API_PREFIX}/status`
+    const first = fakeExecutionContext()
+    const cold = await workers.fetch(new Request(statusUrl), workersTestEnv(), first)
+    await Promise.all(first.waitUntilPromises)
+    expect(cold.headers.get('Server-Timing')).toMatch(
+      /^init;dur=\d+\.\d, db;desc="\d+ stmts", app;dur=\d+\.\d$/
+    )
+
+    try {
+      // The cold response was stored in the edge cache; drop it so the warm
+      // request runs the app again (a cache hit carries no timing at all).
+      await caches.default.delete(new Request(statusUrl))
+      const second = fakeExecutionContext()
+      const warm = await workers.fetch(new Request(statusUrl), workersTestEnv(), second)
+      await Promise.all(second.waitUntilPromises)
+      expect(warm.headers.get('Server-Timing')).toMatch(/^db;desc="\d+ stmts", app;dur=\d+\.\d$/)
+    } finally {
+      await Promise.all(first.waitUntilPromises)
+      await caches.default.delete(new Request(statusUrl))
+    }
+  }, 30_000)
+
+  it('fetch sends no Server-Timing on auth routes or anywhere off the allowlist', async () => {
+    const base = `https://panel.example.com${CLIENT_API_PREFIX}`
+    const requests = [
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      ...['/auth/request-password-reset', '/auth/sign-in', '/auth/sign-up'].map(
+        (path) =>
+          new Request(`${base}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'nobody@example.net', password: 'x' }),
+          })
+      ),
+    ]
+    for (const request of requests) {
+      const ctx = fakeExecutionContext()
+      const response = await workers.fetch(request, workersTestEnv(), ctx)
+      await Promise.all(ctx.waitUntilPromises)
+      expect(response.headers.get('Server-Timing'), `${request.method} ${request.url}`).toBeNull()
+    }
+  }, 30_000)
+
+  it('fetch answers /status from the edge cache before the app runs', async () => {
+    const url = `https://panel.example.com${CLIENT_API_PREFIX}/status`
+    const stored = new Response('{"ok":true,"runtime":"workers"}', {
+      headers: { 'Cache-Control': 'public, max-age=30', 'Content-Type': 'application/json' },
+    })
+    await caches.default.put(new Request(url), stored)
+    try {
+      const response = await workers.fetch(
+        new Request(`${url}?probe=1`, { headers: { Cookie: 'session=ignored' } }),
+        workersTestEnv(),
+        fakeExecutionContext()
+      )
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true, runtime: 'workers' })
+      // Served before init: no route table was built.
+      expect(getWorkerAppRoutePathsForTests()).toEqual([])
+    } finally {
+      await caches.default.delete(new Request(url))
+    }
+  }, 30_000)
+
   it('built Workers app has no self-hosted ingress or tunnel-token routes', async () => {
     const ctx = fakeExecutionContext()
     await workers.fetch(
@@ -155,10 +211,9 @@ describe('workers.ts entry handlers', () => {
     const paths = getWorkerAppRoutePathsForTests().filter((path) =>
       path.includes('/dns-certificates')
     )
-    // The list stays; start, check and retry answer `certificate_ordering_off`
-    // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
-    // the ordering modules (ordering-off.hostfree.test.ts).
-    // Exactly these three: no other ordering route under `/dns-certificates`.
+    // The list, the order and its check and retry only write the row; the
+    // order itself is placed by a server's daemon (dns-certificate-routes.hostfree.test.ts),
+    // and no Workers code can reach the ordering modules (ordering-off.hostfree.test.ts).
     expect([...new Set(paths)].sort((a, b) => a.localeCompare(b))).toEqual([
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`,
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`,
@@ -263,6 +318,26 @@ describe('workers.ts entry handlers', () => {
     }
   }, 30_000)
 
+  it('queue sends a dead-letter queue to the dead-letter consumer, which retries without a database', async () => {
+    setWorkersDbFactoryForTests(() => undefined)
+    for (const queue of ['testing-daemon-commands-dlq', 'testing-system-email-dlq']) {
+      const msg = fakeQueueMessage({ v: 1, job: { type: 'email-otp' } })
+      const base = fakeMessageBatch([msg])
+      const batch = Object.assign(base, { queue })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await workers.queue(batch, workersTestEnv())
+        // Nothing is dropped for want of a database, and the message is never
+        // treated as a broken command envelope.
+        expect(batch.retriedAll).toBe(true)
+        expect(msg.acked).toBe(false)
+        expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('command.permanent_failure')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    }
+  }, 30_000)
+
   it('queue retries the batch when no DB client is available', async () => {
     setWorkersDbFactoryForTests(() => undefined)
     const batch = fakeMessageBatch([fakeQueueMessage({ commandId: 'cmd-1' })])
@@ -298,54 +373,19 @@ describe('workers.ts entry handlers', () => {
     }
   }, 30_000)
 
-  it('a rate-limited auth request never resolves the email queue', async () => {
-    // No CLIENT_AUTH_RATE_LIMITER binding and not a dev surface -> the auth
-    // limiter fails closed (429) before the route body even runs. The lazy
-    // email-queue resolver (Comment 1) must never be reached on this path.
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${CLIENT_API_PREFIX}/auth/sign-in`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
-      }),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(429)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('a rate-limited webhook request never resolves the email queue', async () => {
-    // No GITHUB_WEBHOOK_RATE_LIMITER binding and not a dev surface -> the
-    // webhook gate's rate limit step (the first step) fails closed before
-    // any signature verification or DB work.
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${GITHUB_WEBHOOK_PATH}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      }),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(429)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('a plain health check never resolves the email queue', async () => {
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${HEALTH_PATH}`),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(200)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
+  it('fetch refuses to start without the mail queue binding, outside and inside dev', async () => {
+    for (const overrides of [{}, { TURBOPANEL_DEV_SURFACE: '1' }]) {
+      resetWorkerAppCachesForTests()
+      const ctx = fakeExecutionContext()
+      const testEnv = workersTestEnv({
+        ...overrides,
+        TURBOPANEL_EMAIL_QUEUE: undefined,
+      })
+      await expect(
+        workers.fetch(new Request(`https://panel.example.com${HEALTH_PATH}`), testEnv, ctx)
+      ).rejects.toThrow('TURBOPANEL_EMAIL_QUEUE is not bound')
+    }
+    resetWorkerAppCachesForTests()
   }, 30_000)
 
   it('queue retries transient process failures', async () => {

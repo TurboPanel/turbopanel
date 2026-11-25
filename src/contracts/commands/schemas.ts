@@ -7,6 +7,7 @@ import {
 import {
   type HostingWwwMode,
   HOSTNAME_MAX_LENGTH,
+  hostingCertificateNames,
   isHostingWwwMode,
   isValidHostname,
 } from './hostname.ts'
@@ -2277,14 +2278,6 @@ export type EnvironmentDeploySite = {
 }
 
 /**
- * The build kind the panel puts on the wire for an image-built source. A
- * released daemon only accepts this value, so the new `image` value stays
- * inside the panel until wipe day, when every server is reinstalled and the
- * send flips in one step.
- */
-export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
-
-/**
  * How the daemon turns a Git checkout into a runnable release.
  *
  * `env` is a **non-secret** build-time map only — build secrets keep riding
@@ -2302,14 +2295,9 @@ export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
  *
  * `kind: 'static'` is reserved for the site release phase; only `native` and
  * the image kind are produced today.
- *
- * The panel accepts both the new `image` value and the old value everywhere it
- * reads one, but keeps SENDING the old value on the wire (`IMAGE_BUILD_WIRE_KIND`)
- * because a released daemon rejects `image` at its set check. The send flips
- * on wipe day, when every server is reinstalled.
  */
 export type EnvironmentDeploySourceBuild = {
-  kind: 'native' | 'static' | 'image' | 'railpack'
+  kind: 'native' | 'static' | 'image'
   /**
    * Package manager for a `kind: 'native'` node-app install. Omitted means
    * the daemon auto-detects from the lockfile at build time. An explicit
@@ -2499,6 +2487,51 @@ export type EnvironmentDeployNativeAppVariable = {
 /** Auth shape of a clone credential — see `EnvironmentDeploySource.credentialKind`. */
 export type EnvironmentDeploySourceCredentialKind = 'token' | 'ssh_key'
 
+/** Which level set a build limit: the smallest set among the three wins. */
+export type BuildLimitSource = 'organization' | 'server' | 'service'
+
+/**
+ * The most CPU cores and memory one build may use, as the control plane
+ * resolved it (`build-limits-v1`). Either part may be absent; the daemon then
+ * applies its default (half the server's cores; its RAM less 1 GiB).
+ */
+export type BuildLimits = {
+  cores?: { cores: number; source: BuildLimitSource }
+  memory?: { bytes: number; source: BuildLimitSource }
+  /** Whether the build may use swap (off unless a level opts in). */
+  swap?: { allowed: boolean; source: BuildLimitSource }
+}
+
+/**
+ * The repository a Git Compose project's Base was read from, checked out on the
+ * server so the compose file's relative paths (`build: ./vpn`, `./conf:/etc/x`,
+ * `env_file: ./app.env`) resolve against real files.
+ *
+ * Distinct from {@link EnvironmentDeploySource}: that row builds one service's
+ * release from `x-turbopanel.source`; this one carries the whole project tree
+ * the compose file came from. The daemon checks `commitSha` out into
+ * `<deploymentDir>/repo` before anything builds or starts, and runs Compose with
+ * the folder of `composePath` as its project directory. The clone credential
+ * rides the same sealed lane as `sourceMaterial[]` and is never logged. Gated
+ * by the `compose-checkout-v1` wire feature.
+ */
+export type EnvironmentDeployComposeCheckout = {
+  sourceId: string
+  /** Informational, as on {@link EnvironmentDeploySource}. */
+  provider: 'github' | 'gitlab' | 'git'
+  /** Credential-free clone URL. */
+  cloneUrl: string
+  ref: string
+  /** The resolved commit the compose file was read from. */
+  commitSha: string
+  /** Repo-relative path of the compose file (`deploy/compose.yaml`). */
+  composePath: string
+  /** Daemon-recipient sealed clone credential (`tpdaemon.…`). */
+  credential?: string
+  credentialKind?: EnvironmentDeploySourceCredentialKind
+  credentialUsername?: string
+}
+
 export type EnvironmentDeploySource = {
   sourceId: string
   composeServiceName: string
@@ -2507,6 +2540,8 @@ export type EnvironmentDeploySource = {
    * Echoed on native/hosting/ingress rows for the same compose name.
    */
   releaseServiceId?: string
+  /** The limits of this entry's build, in full (organization, server, service). */
+  buildLimits?: BuildLimits
   /**
    * Which control-plane provider resolved this entry. Carried for tracing and
    * for the host's own logs; the daemon never branches on it — everything it
@@ -2709,6 +2744,32 @@ export type EnvironmentDeployHostAccess = {
    * daemon then refuses such a context. Internal hosts are refused either way.
    */
   remoteBuildSourcesApproved?: boolean
+  /**
+   * True only when the document mounts a network share (a top-level volume
+   * with a `cifs` or `smb3` driver type), the target server allows network
+   * shares and the deploying user may deploy them. Absent reads as `false`;
+   * the daemon then refuses such a volume.
+   */
+  allowNetworkShares?: boolean
+  /**
+   * The logins of the network share volumes (`volume` is the top-level volume
+   * name). `passwordKey` / `usernameKey` is the `key` of a sealed
+   * `variableMaterial[]` entry, looked up as `${composeServiceName ?? ""}::${key}`;
+   * no secret value is carried here and none is in the compose text. A plain
+   * user name is `username` (not with `usernameKey`), a plain domain `domain`. The daemon adds
+   * `username=`, `password=` and `domain=` to the volume's `o` itself; the
+   * control plane never sends them (nor `credentials=`) in `o`. A share with no secret credential is absent from the list.
+   */
+  networkShareCredentials?: EnvironmentDeployNetworkShareCredential[]
+}
+
+export type EnvironmentDeployNetworkShareCredential = {
+  volume: string
+  passwordKey: string
+  usernameKey?: string
+  username?: string
+  domain?: string
+  composeServiceName?: string | null
 }
 
 export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
@@ -2751,6 +2812,12 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * carrying `x-turbopanel.source`.
    */
   sourceMaterial?: EnvironmentDeploySource[]
+  /**
+   * The repository a Git Compose project's compose file came from, to check out
+   * before the build and start (see {@link EnvironmentDeployComposeCheckout}).
+   * Absent for a project whose compose is not read from a repository.
+   */
+  composeCheckout?: EnvironmentDeployComposeCheckout
   /**
    * Per-service Traefik projects for services that publish at least one
    * `tcp`/`udp` port. One entry per service (not per hosting) — that Traefik
@@ -2968,6 +3035,23 @@ export type EnvironmentDeployHosting = {
    * must cover it). A daemon without the field serves only the typed names.
    */
   www?: Exclude<HostingWwwMode, 'off'>
+  /**
+   * Per-name certificates (daemon feature `hosting-name-tls-v1`). Each entry
+   * gives one served name, and its www redirect, its own `tlsId` or `tlsMode`
+   * over the row's; unlisted names keep the row's. Sent only when the row's
+   * names resolve to different values, and only to a daemon that lists the
+   * feature. `internal` is a self-signed certificate (a name waiting for its
+   * pair goes as `internal`, never `acme`); `acme` has the daemon's own ACME
+   * client issue it. Every `tlsId` is in `tlsMaterial`.
+   */
+  nameTls?: EnvironmentDeployNameTls[]
+}
+
+/** One name's certificate in `EnvironmentDeployHosting.nameTls`. */
+export type EnvironmentDeployNameTls = {
+  hostname: string
+  tlsId?: string
+  tlsMode?: 'internal' | 'acme'
 }
 
 export type EnvironmentDeployContainer = {
@@ -2992,9 +3076,7 @@ export type EnvironmentDeployContainer = {
  * round trip to the host. An image-built release has no promoted directory and
  * no commit-backed tree to point at, so its identity there is the image tag
  * plus the pinned tools that produced it (`builderFrontendVersion` /
- * `builderPlanVersion`); a native release omits all three. The parser also
- * accepts the older field names from a daemon that has not moved yet and
- * reports them under the new names.
+ * `builderPlanVersion`); a native release omits all three.
  */
 export type EnvironmentDeployResultRelease = {
   composeServiceName: string
@@ -3219,6 +3301,91 @@ function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] 
   return value === 'off' ? undefined : value
 }
 
+const MAX_DEPLOY_NAME_TLS_ENTRIES = 1000
+
+function parseDeployNameTlsEntry(
+  item: unknown,
+  served: ReadonlySet<string>
+): EnvironmentDeployNameTls {
+  if (!isRecord(item)) throw new TypeError('hostings[].nameTls entries must be objects')
+  const hostname = item.hostname
+  if (!isString(hostname) || !served.has(hostname)) {
+    throw new TypeError(
+      "hostings[].nameTls hostname must be one of the row's served or www redirect names"
+    )
+  }
+  const out: EnvironmentDeployNameTls = { hostname }
+  if (item.tlsId !== undefined) {
+    if (!isString(item.tlsId) || item.tlsId === '') {
+      throw new TypeError('hostings[].nameTls tlsId must be a non-empty string')
+    }
+    out.tlsId = item.tlsId
+  }
+  if (item.tlsMode !== undefined) {
+    if (item.tlsMode !== 'internal' && item.tlsMode !== 'acme') {
+      throw new TypeError('hostings[].nameTls tlsMode must be internal or acme')
+    }
+    out.tlsMode = item.tlsMode
+  }
+  if (out.tlsMode === 'acme' && out.tlsId !== undefined) {
+    throw new TypeError('hostings[].nameTls cannot pin a certificate on an acme name')
+  }
+  return out
+}
+
+/**
+ * Per-name certificates; absent stays absent. The checks match the daemon's:
+ * a name outside the row, a duplicate name, an empty or misplaced pin, an
+ * unknown mode or more than 1000 entries is refused.
+ */
+function parseDeployHostingNameTls(
+  value: unknown,
+  hostnames: string[]
+): EnvironmentDeployNameTls[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_DEPLOY_NAME_TLS_ENTRIES) {
+    throw new TypeError('hostings[].nameTls must be an array')
+  }
+  const served = new Set(hostnames)
+  const seen = new Set<string>()
+  return value.map((item) => {
+    const entry = parseDeployNameTlsEntry(item, served)
+    if (seen.has(entry.hostname)) {
+      throw new TypeError('hostings[].nameTls names a hostname twice')
+    }
+    seen.add(entry.hostname)
+    return entry
+  })
+}
+
+/** Every certificate a `nameTls` entry pins must ride in the same deploy's `tlsMaterial`. */
+function assertNameTlsPinsInMaterial(
+  hostings: readonly EnvironmentDeployHosting[],
+  material: readonly EnvironmentDeployTlsMaterial[] | undefined
+): void {
+  const known = new Set((material ?? []).map((entry) => entry.tlsId))
+  for (const hosting of hostings) {
+    for (const entry of hosting.nameTls ?? []) {
+      if (entry.tlsId !== undefined && !known.has(entry.tlsId)) {
+        throw new TypeError('hostings[].nameTls tlsId is not in tlsMaterial')
+      }
+    }
+  }
+}
+
+/** A name that only arrives through a tunnel must never ask for a public certificate. */
+function assertTunnelNamesOpenForAcme(
+  tunnel: EnvironmentDeployHosting['tunnel'],
+  tlsMode: EnvironmentDeployHosting['tlsMode']
+): void {
+  if (!tunnel || tlsMode !== 'acme') return
+  if (tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))) {
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
+}
+
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
   entry: Record<string, unknown>
@@ -3240,16 +3407,7 @@ function applyOptionalDeployHostingFields(
   if (bindAddress) hosting.bindAddress = bindAddress
   const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
   if (tunnel) hosting.tunnel = tunnel
-  if (
-    tunnel &&
-    hosting.tlsMode === 'acme' &&
-    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
-  ) {
-    // A name that only arrives through a tunnel must never ask for a public certificate.
-    throw new TypeError(
-      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
-    )
-  }
+  assertTunnelNamesOpenForAcme(tunnel, hosting.tlsMode)
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
@@ -3258,6 +3416,11 @@ function applyOptionalDeployHostingFields(
   if (web) hosting.web = web
   const www = parseDeployHostingWww(entry.www)
   if (www) hosting.www = www
+  const nameTls = parseDeployHostingNameTls(
+    entry.nameTls,
+    hostingCertificateNames({ hostnames: hosting.hostnames, www: hosting.www })
+  )
+  if (nameTls) hosting.nameTls = nameTls
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -3470,6 +3633,61 @@ export function parseDeployConfigFiles(value: unknown): EnvironmentDeployConfigF
     throw new TypeError('configFiles exceed the maximum total size')
   }
   return files
+}
+
+const MAX_NETWORK_SHARE_CREDENTIALS = 64
+function optionalNonEmptyString(entry: Record<string, unknown>, name: string): string | undefined {
+  const value = entry[name]
+  if (value === undefined) return undefined
+  if (!isString(value) || value === '') {
+    throw new TypeError(`networkShareCredentials ${name} must be a non-empty string`)
+  }
+  return value
+}
+
+function parseNetworkShareCredentialEntry(entry: unknown): EnvironmentDeployNetworkShareCredential {
+  if (!isRecord(entry) || !isString(entry.volume) || entry.volume === '') {
+    throw new TypeError('Invalid environment.deploy networkShareCredentials entry')
+  }
+  const passwordKey = optionalNonEmptyString(entry, 'passwordKey')
+  if (passwordKey === undefined) {
+    throw new TypeError('networkShareCredentials entry needs a passwordKey')
+  }
+  const out: EnvironmentDeployNetworkShareCredential = { volume: entry.volume, passwordKey }
+  const usernameKey = optionalNonEmptyString(entry, 'usernameKey')
+  const username = optionalNonEmptyString(entry, 'username')
+  if (usernameKey !== undefined && username !== undefined) {
+    throw new TypeError('networkShareCredentials takes usernameKey or username, not both')
+  }
+  if (usernameKey !== undefined) out.usernameKey = usernameKey
+  if (username !== undefined) out.username = username
+  const domain = optionalNonEmptyString(entry, 'domain')
+  if (domain !== undefined) out.domain = domain
+  const service = entry.composeServiceName
+  if (service !== undefined && service !== null) {
+    if (!isString(service)) {
+      throw new TypeError('networkShareCredentials composeServiceName must be a string or null')
+    }
+    out.composeServiceName = service
+  } else if (service === null) {
+    out.composeServiceName = null
+  }
+  return out
+}
+
+export function parseNetworkShareCredentials(
+  value: unknown
+): EnvironmentDeployNetworkShareCredential[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('networkShareCredentials must be an array')
+  if (value.length > MAX_NETWORK_SHARE_CREDENTIALS) {
+    throw new TypeError('too many networkShareCredentials')
+  }
+  const entries = value.map(parseNetworkShareCredentialEntry)
+  if (new Set(entries.map((row) => row.volume)).size !== entries.length) {
+    throw new TypeError('networkShareCredentials volumes must be unique')
+  }
+  return entries
 }
 
 function parseDeployEnvFile(value: unknown): string | undefined {
@@ -4156,7 +4374,6 @@ const SOURCE_BUILD_KINDS = new Set<EnvironmentDeploySourceBuild['kind']>([
   'native',
   'static',
   'image',
-  'railpack',
 ])
 
 /** Cap mirrors compose `SOURCE_COMMAND_MAX_LENGTH`. */
@@ -4209,10 +4426,10 @@ function isSafeSourceSubdirectory(value: unknown): value is string {
 function isCredentialFreeCloneUrl(value: string): boolean {
   if (value.startsWith('https://') || value.startsWith('ssh://')) {
     const authority = value.slice(value.indexOf('://') + 3).split('/')[0] ?? ''
-    return !authority.includes('@')
+    return !authority.includes('@') && !authority.startsWith('-')
   }
   // `git@host:owner/repo.git` — SSH scp-syntax carries a username, not a secret.
-  return /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:/.test(value)
+  return /^[A-Za-z0-9._][A-Za-z0-9._-]*@[A-Za-z0-9.][A-Za-z0-9.-]*:/.test(value)
 }
 
 function parseDeploySourceCommand(value: unknown, field: string): string | undefined {
@@ -4368,6 +4585,62 @@ function applyOptionalSourceFields(
   )
 }
 
+const BUILD_LIMIT_SOURCES = new Set<string>(['organization', 'server', 'service'])
+
+function parseBuildLimitSource(value: unknown, field: string): BuildLimitSource {
+  if (typeof value !== 'string' || !BUILD_LIMIT_SOURCES.has(value)) {
+    throw new Error(`Invalid ${field} source`)
+  }
+  return value as BuildLimitSource
+}
+
+/** `buildLimits`: optional, strict, either part may be absent. */
+export function parseBuildLimits(value: unknown, field = 'buildLimits'): BuildLimits | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error(`Invalid ${field}`)
+  const limits: BuildLimits = {}
+  if (value.cores !== undefined) {
+    const entry = value.cores
+    if (
+      !isRecord(entry) ||
+      typeof entry.cores !== 'number' ||
+      !Number.isFinite(entry.cores) ||
+      entry.cores < 1 ||
+      entry.cores > 999
+    ) {
+      throw new Error(`Invalid ${field} cores`)
+    }
+    limits.cores = {
+      cores: Math.round(entry.cores * 100) / 100,
+      source: parseBuildLimitSource(entry.source, field),
+    }
+  }
+  if (value.memory !== undefined) {
+    const entry = value.memory
+    if (
+      !isRecord(entry) ||
+      typeof entry.bytes !== 'number' ||
+      !Number.isInteger(entry.bytes) ||
+      entry.bytes < 1024 ** 3 ||
+      entry.bytes > 1024 ** 4
+    ) {
+      throw new Error(`Invalid ${field} memory`)
+    }
+    limits.memory = {
+      bytes: entry.bytes,
+      source: parseBuildLimitSource(entry.source, field),
+    }
+  }
+  if (value.swap !== undefined) {
+    const entry = value.swap
+    if (!isRecord(entry) || typeof entry.allowed !== 'boolean') {
+      throw new Error(`Invalid ${field} swap`)
+    }
+    limits.swap = { allowed: entry.allowed, source: parseBuildLimitSource(entry.source, field) }
+  }
+  return limits.cores || limits.memory || limits.swap ? limits : undefined
+}
+
 function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
   if (!isRecord(entry)) throw new Error('Invalid sourceMaterial entry')
   if (!hasValidSourceIdentity(entry)) {
@@ -4395,7 +4668,69 @@ function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
   applyOptionalSourceFields(entry, source)
   const principal = parseDeploySitePrincipal(entry.principal)
   if (principal) source.principal = principal
+  const buildLimits = parseBuildLimits(entry.buildLimits, 'sourceMaterial buildLimits')
+  if (buildLimits) source.buildLimits = buildLimits
   return source
+}
+
+/** Repo-relative path of the compose file: safe, no `..`, not absolute. */
+function parseComposeCheckoutPath(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 512 ||
+    value.startsWith('/') ||
+    /[\\\0\s]/.test(value) ||
+    value.split('/').some((part) => part === '..' || part === '' || part === '.')
+  ) {
+    throw new Error('Invalid composeCheckout composePath')
+  }
+  return value
+}
+
+/** `composeCheckout`: optional, strict, the same clone rules as `sourceMaterial[]`. */
+function parseDeployComposeCheckout(value: unknown): EnvironmentDeployComposeCheckout | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error('Invalid composeCheckout')
+  if (
+    !isString(value.sourceId) ||
+    value.sourceId.length === 0 ||
+    !isString(value.provider) ||
+    !SOURCE_PROVIDERS.has(value.provider as EnvironmentDeploySource['provider'])
+  ) {
+    throw new Error('Invalid composeCheckout identity')
+  }
+  if (!isValidSourceCloneUrl(value.cloneUrl)) throw new Error('Invalid composeCheckout cloneUrl')
+  if (!isValidSourceRef(value.ref) || !isValidSourceRef(value.commitSha)) {
+    throw new Error('Invalid composeCheckout ref/commitSha')
+  }
+  const checkout: EnvironmentDeployComposeCheckout = {
+    sourceId: value.sourceId,
+    provider: value.provider as EnvironmentDeployComposeCheckout['provider'],
+    cloneUrl: value.cloneUrl,
+    ref: value.ref,
+    commitSha: value.commitSha,
+    composePath: parseComposeCheckoutPath(value.composePath),
+  }
+  if (value.credential !== undefined) {
+    if (!isString(value.credential) || value.credential.length === 0) {
+      throw new Error('Invalid composeCheckout credential')
+    }
+    checkout.credential = value.credential
+  }
+  if (value.credentialKind !== undefined) {
+    if (value.credentialKind !== 'token' && value.credentialKind !== 'ssh_key') {
+      throw new Error('Invalid composeCheckout credentialKind')
+    }
+    checkout.credentialKind = value.credentialKind
+  }
+  if (value.credentialUsername !== undefined) {
+    if (!isValidCredentialUsername(value.credentialUsername)) {
+      throw new Error('Invalid composeCheckout credentialUsername')
+    }
+    checkout.credentialUsername = value.credentialUsername
+  }
+  return checkout
 }
 
 function parseDeploySourceMaterial(value: unknown): EnvironmentDeploySource[] | undefined {
@@ -5102,6 +5437,8 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const strings = requireDeployPayloadStrings(value)
   const managedNetworkServices = parseDeployManagedNetworkServices(value.managedNetworkServices)
   const hostings = parseDeployHostings(value.hostings)
+  const tlsMaterial = parseDeployTlsMaterial(value.tlsMaterial)
+  assertNameTlsPinsInMaterial(hostings, tlsMaterial)
   const hostingIngress = parseDeployHostingIngress(value.hostingIngress)
   const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
   return {
@@ -5112,6 +5449,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       sites: parseDeploySites(value.sites),
       nativeAppServices: parseDeployNativeAppServices(value.nativeAppServices),
       sourceMaterial: parseDeploySourceMaterial(value.sourceMaterial),
+      composeCheckout: parseDeployComposeCheckout(value.composeCheckout),
       ingressServices: parseDeployIngressServices(value.ingressServices),
       hostingIngress,
       hostingIngressNetwork: parseDeployHostingIngressNetwork(
@@ -5137,7 +5475,9 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       remoteBuildSourcesApproved: parseOptionalDeployBoolean(value.remoteBuildSourcesApproved),
-      tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
+      allowNetworkShares: parseOptionalDeployBoolean(value.allowNetworkShares),
+      networkShareCredentials: parseNetworkShareCredentials(value.networkShareCredentials),
+      tlsMaterial,
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),
       secretPlan: parseDeploySecretPlan(value.secretPlan),
@@ -5263,11 +5603,8 @@ function parseDeployResultReleases(value: unknown): EnvironmentDeployResultRelea
     ) {
       continue
     }
-    const builderFrontendVersion = firstString(
-      entry.builderFrontendVersion,
-      entry.railpackFrontendVersion
-    )
-    const builderPlanVersion = firstString(entry.builderPlanVersion, entry.railpackPlanVersion)
+    const builderFrontendVersion = firstString(entry.builderFrontendVersion)
+    const builderPlanVersion = firstString(entry.builderPlanVersion)
     out.push({
       composeServiceName: entry.composeServiceName,
       serviceId: entry.serviceId,
@@ -6546,8 +6883,8 @@ export type ManagedIngressReconcileCommandPayload = {
    * This server's own ProxySQL backend monitor credential (control-plane
    * minted, per server). The daemon sets the ProxySQL monitor globals from it
    * and rewrites host `monitor.cnf`. Password is a daemon-bound `tpdaemon`
-   * envelope. Absent on teardown payloads and from older control planes
-   * (daemon falls back to the host-seeded `monitor.cnf`).
+   * envelope. Absent only on empty-cluster teardown payloads; the daemon
+   * refuses any other reconcile without it.
    */
   monitor?: { username: string; password: string }
   segments?: Array<{ name: string; subnet: string }>

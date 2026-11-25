@@ -20,6 +20,20 @@ export const EDGE_MODES: readonly string[] = [
   'passthrough',
 ]
 
+/**
+ * The mode a hostname behaves as for the heartbeat. A `direct` name the owner
+ * marked as behind a CDN proxy is reached through an edge that closes idle
+ * sockets, so it counts as `cloudflare-proxy`.
+ */
+export function effectiveHeartbeatMode(hostname: {
+  mode: string
+  behindCdnProxy?: boolean
+}): string {
+  return hostname.mode === 'direct' && hostname.behindCdnProxy === true
+    ? 'cloudflare-proxy'
+    : hostname.mode
+}
+
 export type HeartbeatRuntime = 'deno' | 'workers'
 
 export function heartbeatSecondsFor(modes: readonly string[], runtime: HeartbeatRuntime): number {

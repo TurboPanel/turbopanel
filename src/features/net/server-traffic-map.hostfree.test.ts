@@ -88,8 +88,8 @@ function input(
   return {
     serverId: 'a',
     peers: [
-      { serverId: 'a', name: 'adrastea' },
-      { serverId: 'b', name: 'kore' },
+      { serverId: 'a', name: 'host-a' },
+      { serverId: 'b', name: 'server-b' },
     ],
     caches: caches(options),
     datacenterNames: new Map([
@@ -109,7 +109,7 @@ test('the backhaul wins by priority and carries every kind of traffic', () => {
   const map = buildServerTrafficMap(input())
   assertEquals(map.peers.length, 1)
   const peer = map.peers[0]
-  assertEquals(peer.name, 'kore')
+  assertEquals(peer.name, 'server-b')
   assertEquals(peer.chosenDatacenterId, BACKHAUL)
   assertEquals(
     peer.sharedNetworks.map((row) => [row.datacenterId, row.state, row.localInterface]),

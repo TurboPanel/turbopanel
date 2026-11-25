@@ -1,0 +1,95 @@
+import { type MailgunConfig, mailgunConfigFromSettings } from '../mailgun/config.ts'
+import { sendMailgunJob } from '../mailgun/send.ts'
+import { resolveEmailSettings } from '../../settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
+import type { EmailJob } from '../types.ts'
+import type { MailerSendResult } from '../sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../validate-address.ts'
+import type { Db } from '../../../db/connection.ts'
+import { logError } from '../../../lib/logger.ts'
+
+class MailgunConfigError extends Error {}
+
+function validateMailgunSettings(
+  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>
+): MailgunConfig {
+  if (resolved.provider !== 'mailgun') {
+    throw new MailgunConfigError(`email provider is ${resolved.provider}, not mailgun`)
+  }
+  const config = mailgunConfigFromSettings(resolved)
+  if (config === undefined) {
+    throw new MailgunConfigError('Mailgun API key and domain are required')
+  }
+  return config
+}
+
+function isPermanentError(error: unknown): boolean {
+  if (error instanceof PermanentSendError || error instanceof MailgunConfigError) return true
+  return false
+}
+
+export class MailerMailgunSender {
+  private readonly db: Db | undefined
+  private readonly env: Record<string, string | undefined>
+  private readonly dataEncryptionSecrets: DerivedSecretsConfig | undefined
+
+  constructor(opts: {
+    db: Db | undefined
+    env?: Record<string, string | undefined>
+    dataEncryptionSecrets?: DerivedSecretsConfig
+  }) {
+    this.db = opts.db
+    this.env = opts.env ?? Deno.env.toObject()
+    this.dataEncryptionSecrets = opts.dataEncryptionSecrets
+  }
+
+  private async resolveMailgunConfig(): Promise<{
+    apiKey: string
+    domain: string
+    from: string
+    apiBase: string
+  }> {
+    const resolved = await resolveEmailSettings(this.db, this.env, this.dataEncryptionSecrets)
+    return validateMailgunSettings(resolved)
+  }
+
+  async sendJob(job: EmailJob): Promise<MailerSendResult> {
+    try {
+      const config = await this.resolveMailgunConfig()
+      validateEmailAddress(config.from, 'from')
+      if (
+        job.type === 'signup-verification' ||
+        job.type === 'password-reset' ||
+        job.type === 'email-otp' ||
+        job.type === 'server-tier-notice' ||
+        job.type === 'invitation' ||
+        job.type === 'notification' ||
+        job.type === 'channel-verification'
+      ) {
+        validateEmailAddress(job.to, 'recipient')
+      }
+
+      const outcome = await sendMailgunJob(job, {
+        apiKey: config.apiKey,
+        domain: config.domain,
+        from: config.from,
+        apiBase: config.apiBase,
+      })
+
+      if (outcome.ok) return { success: true }
+      return { success: false, error: outcome.error, permanent: outcome.permanent }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e)
+      logError('mailer', `send failed: ${errMsg}`)
+      return { success: false, error: errMsg, permanent: isPermanentError(e) }
+    }
+  }
+}
+
+export function createMailerMailgunSender(opts: {
+  db: Db | undefined
+  env?: Record<string, string | undefined>
+  dataEncryptionSecrets?: DerivedSecretsConfig
+}): MailerMailgunSender {
+  return new MailerMailgunSender(opts)
+}

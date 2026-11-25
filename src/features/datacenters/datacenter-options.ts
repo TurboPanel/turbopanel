@@ -40,9 +40,10 @@ export type DatacenterOptions = {
   priority?: number
   /**
    * Whether the datacenter's L2 is under the operator's control. Absence
-   * implies `DEFAULT_DATACENTER_TRUSTED` (`true`); an untrusted datacenter is
-   * one whose L2 the operator does not control (shared or provider-owned
-   * segments). The parser only returns the field when it was explicitly set.
+   * implies `DEFAULT_DATACENTER_TRUSTED` (`false`, untrusted); a trusted
+   * datacenter is one the operator marked trusted (a private switch they
+   * control); untrusted networks carry server-to-server traffic over
+   * TurboFabric. The parser only returns the field when it was explicitly set.
    */
   trusted?: boolean
   /**
@@ -73,7 +74,7 @@ export const DEFAULT_DATACENTER_PRIORITY = 100
 export const DATACENTER_PRIORITY_MIN = 0
 export const DATACENTER_PRIORITY_MAX = 1000
 /** Default `datacenter.trusted` column value. */
-export const DEFAULT_DATACENTER_TRUSTED = true
+export const DEFAULT_DATACENTER_TRUSTED = false
 
 /** Integer in range → the value; anything else → undefined (never clamps). */
 export function parseDatacenterPriority(value: unknown): number | undefined {

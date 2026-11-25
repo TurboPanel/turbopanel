@@ -19,6 +19,7 @@ import {
 } from '../features/alerts/alert-webhook-settings.ts'
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
+import { registerOrganizationAdminRoutes } from './organization-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
 import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
 import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
@@ -62,8 +63,10 @@ import {
   syncForgeHandler,
 } from '../client/forges/handlers.ts'
 import {
+  emailProviderUnsupportedOnWorkers,
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
+  invalidEmailSettingUpdate,
   resolveEmailSettings,
   updateEmailSettings,
 } from '../features/settings/email-settings.ts'
@@ -122,6 +125,7 @@ import {
   isValidServerMetricsLiveMaxMinutes,
   setServerMetricsLiveMaxMinutes,
 } from '../features/settings/server-metrics-settings.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 type PublicUrlsApplyPayloadOutcome =
   { ok: true; payload: PublicUrlsApplyPayload } | ({ ok: false } & PublicUrlsApplyErrorResponse)
@@ -131,16 +135,12 @@ async function buildPublicUrlsApplyPayload(
   c: Context<AppEnv>,
   opts: { getEnv?: () => Record<string, string | undefined> },
   db: NonNullable<ReturnType<typeof getDb>>,
-  serverId: string,
-  urls: string[],
-  daemonVersion: string | undefined
+  serverId: string
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
     const payload = await buildPublicUrlsPayload({
       db,
       serverId,
-      urls,
-      daemonVersion,
       secretsConfig: c.get('secretsConfig'),
       dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       env: resolvePlatformEnv(c, opts),
@@ -247,6 +247,7 @@ export function registerAdminRoutes(
   opts.registerTiers?.(admin)
   registerNotificationAdminRoutes(admin)
   registerMailDeadLetterAdminRoutes(admin, { store: opts.mailDeadLetters })
+  registerOrganizationAdminRoutes(admin)
 
   admin.get('/daemon/connections', async (c) => {
     const registry = getDaemonCellRegistry(c)
@@ -339,7 +340,7 @@ export function registerAdminRoutes(
     const refused = refuseWorkersWrite(c, opts)
     if (refused) return refused
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
 
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('urls' in body)) {
@@ -411,70 +412,75 @@ export function registerAdminRoutes(
 
   admin.get('/forges', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await listForgesHandler(c, db, instanceScope)
   })
 
   admin.post('/forges', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await createForgeHandler(c, db, instanceScope)
   })
 
   // Before `/forges/:id`: same segment count, and the literal must win.
   admin.get('/forges/webhook-origins', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await getWebhookOriginsHandler(c, db)
   })
 
   admin.post('/forges/github/manifest', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await startGithubManifestHandler(c, db, instanceScope)
   })
 
   admin.get('/forges/github/manifest/callback', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await completeGithubManifestHandler(c, db, instanceScope)
   })
 
   admin.post('/forges/:id/sync', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await syncForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.get('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await getForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.patch('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await patchForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.delete('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await deleteForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
+
+  // One answer for the settings read, the validation and the write below.
+  const emailRuntime = (c: Context): 'deno' | 'workers' =>
+    opts.runtime === 'workers' || c.get('runtime') === 'workers' ? 'workers' : 'deno'
 
   admin.get('/settings/email', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const runtime = emailRuntime(c)
     const resolved = await resolveEmailSettings(
       db,
       resolvePlatformEnv(c, opts),
-      dataEncryptionSecrets
+      dataEncryptionSecrets,
+      runtime
     )
-    const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
     const state = emailDeliveryState({
       settings: resolved,
       runtime,
@@ -505,6 +511,15 @@ export function registerAdminRoutes(
       return c.json({ error: 'expected a JSON object of setting keys' }, 400)
     }
 
+    const invalidUpdate = invalidEmailSettingUpdate(updates)
+    if (invalidUpdate) return c.json({ error: invalidUpdate }, 400)
+    if (emailRuntime(c) === 'workers') {
+      const unsupported = emailProviderUnsupportedOnWorkers(updates)
+      if (unsupported) {
+        return apiError(c, 422, unsupported.code, unsupported.message)
+      }
+    }
+
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     // DB-backed secret writes must be sealed at rest — require an encryption key,
     // mirroring TLS and variable secret writes.
@@ -513,7 +528,13 @@ export function registerAdminRoutes(
     }
 
     const env = resolvePlatformEnv(c, opts)
-    const resolved = await updateEmailSettings(db, env, updates, dataEncryptionSecrets)
+    const resolved = await updateEmailSettings(
+      db,
+      env,
+      updates,
+      dataEncryptionSecrets,
+      emailRuntime(c)
+    )
     // Workers resolves the email queue per request from current DB settings
     // (see workers.ts fetch middleware) — no isolate-level queue cache to
     // invalidate after this write.
@@ -721,7 +742,7 @@ export function registerAdminRoutes(
     }
 
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
 
     const body = await c.req.json().catch(() => null)
     const urlsResult = await resolvePublicUrlsForApply(db, body)
@@ -752,14 +773,7 @@ export function registerAdminRoutes(
     }
 
     await opts.refreshEdgeRanges?.(db).catch(() => undefined)
-    const applied = await buildPublicUrlsApplyPayload(
-      c,
-      opts,
-      db,
-      serverId,
-      urlsResult.urls,
-      snapshot.daemonBuild?.version
-    )
+    const applied = await buildPublicUrlsApplyPayload(c, opts, db, serverId)
     if (!applied.ok) {
       return c.json(applied.body, applied.status)
     }

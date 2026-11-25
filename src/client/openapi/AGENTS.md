@@ -47,3 +47,13 @@ sequenceDiagram
     Instance-->>Browser: Scalar embed (bearerAuth JWT)
 ```
 
+
+## Every route needs a spec entry
+
+`src/app/openapi-parity.hostfree.test.ts` lists every route the client, admin
+and daemon apps register and fails when one has no operation in its OpenAPI
+document. Routes still undocumented are listed in
+`src/app/openapi-parity-baseline.ts`; that list only shrinks (a line whose route
+is now documented or gone fails too). Add the spec entry with a new route, never
+a baseline line. The developer surface, the webhooks and the WebSocket upgrades
+are out of scope for this check.

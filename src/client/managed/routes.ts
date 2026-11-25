@@ -35,7 +35,6 @@ import {
   BACKUP_LOGIN_UNIQUE_INDEX,
   backupLoginSettings,
   backupLoginSourcesRefusal,
-  refuseBackupLoginOnOldDaemon,
 } from '../../features/managed/backup-login.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
@@ -53,7 +52,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo, readWriteGrantState } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
   listLoginOnDatabase,
@@ -74,19 +73,13 @@ import {
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
-  daemonCanConvertDatabase,
-  daemonHonoursOwnerRole,
-  refuseLoginCreateIfDaemonCannot,
-  daemonOwnerSupport,
   type LoginLimitFields,
   loginLimitSettings,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
-  refuseLoginPatchIfDaemonCannot,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
-  applySettingsPatch,
   createManagedLogin,
   findManagedLogin,
   findManagedLoginByRole,
@@ -222,6 +215,8 @@ import {
   copyTargetForDelete,
   copyTargetForNewBackup,
   describeClusterBackupTarget,
+  backupNotFoundResponse,
+  refuseUnknownRestoreFields,
   refuseWrongHostRestore,
   copySourceForRestore,
   wantsRestoreFromCopy,
@@ -259,6 +254,7 @@ import {
   canHardDeleteManaged,
   connectionListenerFromAccess,
   DATABASE_ADMIN_PRIVILEGE,
+  engineLoginNameForPrincipal,
   evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
   evaluateManagedLoginDropGuard,
@@ -308,6 +304,8 @@ import {
 } from '../../features/managed/routes-helpers.ts'
 import {
   buildConnectionPayload,
+  isManagedNeverProvisioned,
+  managedRetryState,
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
@@ -903,9 +901,20 @@ async function clearIncompleteManagedCreate(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   existing: ManagedRow,
-  fallbackServerId: string | null,
+  ctx: ManagedContext,
   userId: string
 ): Promise<Response | null> {
+  const retryState = managedRetryState(existing, Date.now())
+  // A retry in place is moving this row right now: never read it as an
+  // abandoned create (that would delete it and its bindings).
+  if (retryState === 'running') return c.json({ error: 'managed_busy' }, 409)
+  if (
+    retryState === 'stale' ||
+    (existing.status === 'failed' && isManagedNeverProvisioned(existing))
+  ) {
+    return await retryFailedManagedCreate(c, db, { existing, ctx, userId })
+  }
+  // A create that never reached its first apply: nothing ran, nothing is bound.
   if (existing.status === 'provisioning') {
     await deleteManagedCompensation(c, db, {
       userId,
@@ -914,12 +923,113 @@ async function clearIncompleteManagedCreate(
     })
     return null
   }
-  const serverId = resolveManagedServerId(existing, fallbackServerId)
+  const serverId = resolveManagedServerId(existing, ctx.serverId)
   return c.json({
     ok: true as const,
     alreadyProvisioned: true as const,
     managed: serializeManagedRow(existing, serverId),
   })
+}
+
+/**
+ * Retries the first apply of a `failed` row that never reported an address, in
+ * place: the row id, its logins and the service bindings stay. The passwords
+ * are untouched: the host wrote the root password file during the failed
+ * apply and does not rewrite it, so a new one would never reach the engine.
+ * The row is marked (`metadata.retryStartedAt`) while it waits in
+ * `provisioning`, so a second POST in that window is refused instead of
+ * treating the row as an abandoned create. Anything that fails after the move
+ * puts the row back as it was.
+ */
+async function retryFailedManagedCreate(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: {
+    existing: ManagedRow
+    ctx: ManagedContext
+    userId: string
+  }
+): Promise<Response> {
+  const { existing, ctx, userId } = params
+  const residual = parseManagedResidual(existing.metadata)
+
+  const options = await loadManagedOptions(db, ctx.spec, existing)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const targetServerId = resolveManagedTargetServerId(c, existing.serverId ?? ctx.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  // Back to `provisioning`, only from the state and revision just read: a
+  // second retry racing this one finds the row already moved and stops here.
+  const {
+    error: _previousError,
+    retryStartedAt: _previousMarker,
+    ...metadataWithoutRetry
+  } = (existing.metadata as Record<string, unknown> | null) ?? {}
+  const [moved] = await db
+    .update(managed)
+    .set({
+      status: 'provisioning',
+      metadata: { ...metadataWithoutRetry, retryStartedAt: new Date().toISOString() },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(
+      and(
+        eq(managed.id, existing.id),
+        eq(managed.status, existing.status ?? 'failed'),
+        eq(managed.updatedAt, existing.updatedAt)
+      )
+    )
+    .returning(MANAGED_RETURNING)
+  if (!moved) return c.json({ error: 'managed_busy' }, 409)
+
+  const restoreFailed = async () => {
+    await db
+      .update(managed)
+      .set({
+        status: 'failed',
+        metadata: existing.metadata,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(managed.id, existing.id),
+          // A refused enqueue already flips the row to `failed` itself.
+          inArray(managed.status, ['provisioning', 'applying', 'failed'])
+        )
+      )
+  }
+
+  try {
+    const prepared = await prepareApplyForManaged(c, db, ctx, moved, options, targetServerId)
+    if (prepared instanceof Response) {
+      await restoreFailed()
+      return prepared
+    }
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId,
+      managedId: existing.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) {
+      await restoreFailed()
+      return enqueued
+    }
+
+    const primary = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true as const,
+      retried: true as const,
+      managed: serializeManagedRow(moved, targetServerId),
+      commandId: primary?.commandId,
+      serverId: primary?.serverId ?? targetServerId,
+      results: enqueued,
+      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
+    })
+  } catch (error) {
+    await restoreFailed()
+    throw error
+  }
 }
 
 async function resolveManagedCreatePlan(
@@ -969,15 +1079,8 @@ async function resolveManagedCreatePlan(
 
   const initialDatabase = readInitialDatabase(ctx.spec)
   // The cluster's first database is made by the engine's first start, for the
-  // platform admin. A daemon that can move it onto an owner role while it is
-  // empty is asked to; an older one leaves it as it was, so it is not recorded
-  // as having one.
-  const firstOwnerRole = resolveDatabaseOwnerRole(
-    ctx.spec.engine,
-    initialDatabase,
-    undefined,
-    ctx.spec.engine !== 'postgres' || (await daemonOwnerSupport(db, serverId)).databaseOwner
-  )
+  // platform admin, and the daemon moves it onto an owner role while it is empty.
+  const firstOwnerRole = resolveDatabaseOwnerRole(ctx.spec.engine, initialDatabase, undefined)
   return {
     name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
@@ -1597,22 +1700,14 @@ async function restoreUnlessQueued(
 }
 
 /** Owner checks around a login PATCH: a refusal Response, or the notes for the answer. */
-async function gateLoginPatchOwnership(
+function gateLoginPatchOwnership(
   c: Context<AppEnv>,
-  db: Db,
   engine: string,
   options: ManagedRowOptions,
   target: Parameters<typeof loginPatchOwnerChecks>[2],
-  plan: { patch: LoginSettingsPatch; grantMode: string },
-  serverId: string
-): Promise<Response | { notes: string[] }> {
-  const checks = loginPatchOwnerChecks(
-    engine,
-    options,
-    target,
-    plan,
-    await daemonOwnerSupport(db, serverId)
-  )
+  plan: { patch: LoginSettingsPatch; grantMode: string }
+): Response | { notes: string[] } {
+  const checks = loginPatchOwnerChecks(engine, options, target, plan)
   if (!checks.refusal) return { notes: checks.notes }
   return c.json(
     { error: checks.refusal.error, message: checks.refusal.message },
@@ -1743,9 +1838,11 @@ async function createLoginWithNewName(
 
 /**
  * A login for an existing principal: the engine role takes the principal's
- * applied name (the one allowed overlap in the organization's name pool), so
- * only the cluster itself and the shared frontend of other organizations'
- * clusters are checked for that name.
+ * applied name, or its mapped name when the engine does not accept it as-is
+ * (the one allowed overlap in the organization's name pool). An unmapped
+ * name is checked only against the cluster itself and the shared frontend of
+ * other organizations' clusters; a mapped name is a new name, so it is also
+ * checked against every Linux user of the pool, this principal included.
  */
 async function createLoginForExistingPrincipal(
   tx: Db,
@@ -1756,7 +1853,15 @@ async function createLoginForExistingPrincipal(
   if (existingLogins.some((entry) => entry.principalId === target.id)) {
     return { ok: false, error: 'managed_login_exists', status: 409 }
   }
-  const key = target.appliedUsername.toLowerCase()
+  // The engine role is the principal's applied name when the engine takes it,
+  // else a deterministic mapped name (`engineLoginNameForPrincipal`).
+  const engineName = engineLoginNameForPrincipal(params.ctx.spec, target.appliedUsername)
+  if (engineName === null) {
+    // The create request already refused this name with a 422.
+    throw new TypeError(`no engine login name for principal ${target.id}`)
+  }
+  const mapped = engineName !== target.appliedUsername
+  const key = engineName.toLowerCase()
   if (
     existingLogins.some(
       (entry) => entry.username === target.username || entry.appliedUsername.toLowerCase() === key
@@ -1765,22 +1870,13 @@ async function createLoginForExistingPrincipal(
     return { ok: false, error: 'managed_user_exists', status: 409 }
   }
   if (
-    (await isManagedUsernameTaken(tx, owningOrgIds, target.appliedUsername, target.id)) ||
-    (await isManagedLoginNameTaken(
-      tx,
-      owningOrgIds,
-      target.appliedUsername,
-      undefined,
-      target.id
-    )) ||
+    // A mapped name is a new name in the pool: no principal (not even this
+    // one) may hold it as a Linux user. An unmapped name is the principal's own.
+    (await isManagedUsernameTaken(tx, owningOrgIds, engineName, mapped ? undefined : target.id)) ||
+    (await isManagedLoginNameTaken(tx, owningOrgIds, engineName, undefined, target.id)) ||
     // The principal's own name is the allowed overlap across engines, but not
     // inside one protocol family on one server (one shared frontend namespace).
-    (await isManagedLoginNameTakenInFamily(
-      tx,
-      managedId,
-      params.ctx.spec.engine,
-      target.appliedUsername
-    ))
+    (await isManagedLoginNameTakenInFamily(tx, managedId, params.ctx.spec.engine, engineName))
   ) {
     return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
   }
@@ -1789,7 +1885,7 @@ async function createLoginForExistingPrincipal(
     managedId,
     principalId: target.id,
     username: target.username,
-    appliedUsername: target.appliedUsername,
+    appliedUsername: engineName,
     ...settings,
     nameScheme,
   })
@@ -1799,7 +1895,7 @@ async function createLoginForExistingPrincipal(
     loginId: created.loginId,
     password: created.password,
     username: target.username,
-    appliedUsername: target.appliedUsername,
+    appliedUsername: engineName,
     nameScheme,
   }
 }
@@ -1826,26 +1922,8 @@ async function gateLoginCreate(
   }
 ): Promise<Response | { commandQueue: CommandQueue; limits: LoginLimitFields; notes: string[] }> {
   const { ctx, row, options, targetServerId } = params
-  // Read-only checks, so they run together; the first refusal in grant order answers.
-  const refusals = await Promise.all(
-    params.grants.map((grant) =>
-      refuseLoginCreateIfDaemonCannot(
-        c,
-        db,
-        { engine: ctx.spec.engine, privileges: grant.privileges, grantMode: params.grantMode },
-        targetServerId
-      )
-    )
-  )
-  const daemonRefused = refusals.find((refusal) => refusal !== null)
-  if (daemonRefused) return daemonRefused
-  const ownerSupport = await daemonOwnerSupport(db, targetServerId)
   const notes = params.grants.flatMap((grant) =>
-    adminAccessNotes(
-      ctx.spec.engine,
-      { ...grant, ownerRoleDatabases: options.ownerRoleDatabases },
-      ownerSupport
-    )
+    adminAccessNotes(ctx.spec.engine, { ...grant, ownerRoleDatabases: options.ownerRoleDatabases })
   )
   const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
   if (commandQueue instanceof Response) return commandQueue
@@ -1854,7 +1932,6 @@ async function gateLoginCreate(
     db,
     ctx.organizationId,
     params.body,
-    targetServerId,
     ctx.spec.engine
   )
   if (limits instanceof Response) return limits
@@ -2203,9 +2280,6 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
   if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
   const targetServerId = resolveManagedTargetServerId(c, row.serverId)
   if (targetServerId instanceof Response) return targetServerId
-
-  const daemonRefused = await refuseBackupLoginOnOldDaemon(db, targetServerId)
-  if (daemonRefused) return c.json(daemonRefused, 409)
 
   const gate = await gateLoginCreate(c, db, {
     ctx,
@@ -2597,13 +2671,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // provisioning. This is not itself a create, so it displays whichever
       // server id is known (`managed.server_id`, falling back to the
       // environment's current placement) rather than hard-requiring one.
-      const idempotent = await clearIncompleteManagedCreate(
-        c,
-        db,
-        existing,
-        ctx.serverId,
-        auth.userId
-      )
+      const idempotent = await clearIncompleteManagedCreate(c, db, existing, ctx, auth.userId)
       if (idempotent) return idempotent
     }
 
@@ -3173,21 +3241,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
     if (parsed instanceof Response) return parsed
-    const { dryRun, limits, plan } = parsed
+    const { dryRun, plan } = parsed
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
     // A login that owns a database stays able to own it; an admin login gets
     // notes on what it got.
-    const gate = await gateLoginPatchOwnership(
-      c,
-      db,
-      ctx.spec.engine,
-      options,
-      target,
-      plan,
-      targetServerId
-    )
+    const gate = gateLoginPatchOwnership(c, ctx.spec.engine, options, target, plan)
     if (gate instanceof Response) return gate
     const { notes } = gate
 
@@ -3202,25 +3262,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
-    // An All Databases login is judged on the cluster's whole list.
-    const appliedPatch = applySettingsPatch(target, plan.patch)
-    const afterPatchSettings = appliedPatch.allDatabases
-      ? { ...appliedPatch, databases: options.databases }
-      : appliedPatch
-    const daemonRefused = await refuseLoginPatchIfDaemonCannot(
-      c,
-      db,
-      {
-        limits,
-        engine: ctx.spec.engine,
-        readWrite: {
-          before: readWriteGrantState(target),
-          after: readWriteGrantState(afterPatchSettings),
-        },
-      },
-      targetServerId
-    )
-    if (daemonRefused) return daemonRefused
     const previous = target
     await patchLogin(db, target.id, plan.patch)
     const restore = async () => {
@@ -3385,12 +3426,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
-    const refusal = evaluateOwnerRoleConversion(
-      ctx.spec.engine,
-      databaseName,
-      body.confirm,
-      await daemonCanConvertDatabase(db, targetServerId)
-    )
+    const refusal = evaluateOwnerRoleConversion(ctx.spec.engine, databaseName, body.confirm)
     if (refusal) {
       return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
     }
@@ -3467,43 +3503,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
-    // Validate the request first; the daemon check needs the server.
-    const requestedOwnerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
-    if (!requestedOwnerRole.ok) {
-      return c.json(
-        {
-          error: requestedOwnerRole.error,
-          message: requestedOwnerRole.message,
-        },
-        requestedOwnerRole.status
-      )
+    const ownerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
+    if (!ownerRole.ok) {
+      return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const ownerRole = resolveDatabaseOwnerRole(
-      ctx.spec.engine,
-      name,
-      body.ownerRole,
-      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
-    )
-    if (!ownerRole.ok) {
-      return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
-    }
-
     // A login the customer picked as the owner (Postgres): it must be able to
     // own a database, the daemon must know how, and it is listed on the new
     // database so it can connect to it.
-    const chosen = await resolveChosenOwnerLogin(
-      c,
-      db,
-      ctx.spec.engine,
-      row.id,
-      body,
-      name,
-      targetServerId
-    )
+    const chosen = await resolveChosenOwnerLogin(c, db, ctx.spec.engine, row.id, body, name)
     if (chosen instanceof Response) return chosen
     const conflict = ownerChoiceConflict(chosen, ownerRole.ownerRole)
     if (conflict) return c.json(conflict, 400)
@@ -4445,8 +4456,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    const unknownField = await refuseUnknownRestoreFields(c)
+    if (unknownField) return unknownField
+
     const record = await findManagedBackupById(db, row.id, backupId)
-    if (!record) return c.json({ error: 'backup_not_found' }, 404)
+    if (!record) {
+      return await backupNotFoundResponse(c, db, auth.organizationId, row.id, backupId)
+    }
 
     // Restore must run on the host that actually owns the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.

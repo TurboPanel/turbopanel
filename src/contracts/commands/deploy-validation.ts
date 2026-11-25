@@ -1,5 +1,10 @@
 import { DOCKER_RESOURCE_NAME_RE } from '../../lib/naming.ts'
-import { isValidHostname } from './hostname.ts'
+import {
+  hostingServedNames,
+  hostingTlsForName,
+  hostingWwwRedirects,
+  isValidHostname,
+} from './hostname.ts'
 import type { EnvironmentDeployHosting, EnvironmentDeployStorageMaterial } from './schemas.ts'
 
 const STORAGE_KINDS = new Set(['volume', 'directory', 'file'])
@@ -99,7 +104,16 @@ function recordHostnameAcmeHttps(
   hostname: string,
   hosting: EnvironmentDeployHosting
 ): string | null {
-  if (hosting.tlsMode === 'acme') {
+  // A name a `www` mode expands answers on its served spellings too, and each
+  // may pick its own certificate: any one on acme needs the HTTPS site (a redirect
+  // name on acme sends visitors to https).
+  const own = { hostnames: [hostname], www: hosting.www }
+  const names = [
+    hostname,
+    ...hostingServedNames(own),
+    ...hostingWwwRedirects(own).map((redirect) => redirect.from),
+  ]
+  if (names.some((name) => hostingTlsForName(hosting, name).tlsMode === 'acme')) {
     state.hasAcme = true
   }
   if (hosting.proxy?.forceHttps === false) {
@@ -107,6 +121,21 @@ function recordHostnameAcmeHttps(
   }
   if (state.hasAcme && state.hasDisabledHttps) {
     return `forceHttps:false is incompatible with ACME TLS on hostname ${hostname}`
+  }
+  return null
+}
+
+function recordHostingHostnames(
+  byHostname: Map<string, HostnameRoutingState>,
+  hosting: EnvironmentDeployHosting
+): string | null {
+  for (const hostname of hosting.hostnames) {
+    const state = getOrCreateHostnameState(byHostname, hostname)
+    const error =
+      recordHostnamePathPrefix(state, hostname, hosting.pathPrefix) ??
+      recordHostnameBindAddress(state, hostname, hosting.bindAddress) ??
+      recordHostnameAcmeHttps(state, hostname, hosting)
+    if (error) return error
   }
   return null
 }
@@ -122,15 +151,8 @@ export function validateDeployHostnameRouting(hostings: EnvironmentDeployHosting
 
   for (const hosting of hostings) {
     if ((hosting.protocol ?? 'http') !== 'http') continue
-    for (const hostname of hosting.hostnames) {
-      const state = getOrCreateHostnameState(byHostname, hostname)
-      const pathError = recordHostnamePathPrefix(state, hostname, hosting.pathPrefix)
-      if (pathError) return pathError
-      const bindError = recordHostnameBindAddress(state, hostname, hosting.bindAddress)
-      if (bindError) return bindError
-      const acmeError = recordHostnameAcmeHttps(state, hostname, hosting)
-      if (acmeError) return acmeError
-    }
+    const error = recordHostingHostnames(byHostname, hosting)
+    if (error) return error
   }
 
   return findDuplicateCatchAllHostname(byHostname)

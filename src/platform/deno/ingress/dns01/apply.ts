@@ -33,7 +33,7 @@ export async function pushHostnamesToDaemon(db: Db, deps: DaemonApplyDeps): Prom
   if (!serverId || !snapshot?.connected) {
     throw new Error('the daemon on the control plane host is not connected')
   }
-  await pushHostnamesToServer(db, deps, serverId, snapshot.daemonBuild?.version)
+  await pushHostnamesToServer(db, deps, serverId)
 }
 
 /**
@@ -43,16 +43,13 @@ export async function pushHostnamesToDaemon(db: Db, deps: DaemonApplyDeps): Prom
 async function pushHostnamesToServer(
   db: Db,
   deps: DaemonApplyDeps,
-  serverId: string,
-  daemonVersion: string | undefined
+  serverId: string
 ): Promise<void> {
   const urls = await resolvePublicUrlsForApply(db, null)
   if (!urls.ok) throw new Error('the public URL list could not be read')
   const payload = await buildPublicUrlsPayload({
     db,
     serverId,
-    urls: urls.urls,
-    daemonVersion,
     secretsConfig: deps.secretsConfig,
     dataEncryptionSecrets: deps.dataEncryption,
     env: deps.env,

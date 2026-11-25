@@ -51,7 +51,7 @@ export type TunnelState = {
 }
 
 export function tunnelName(instanceId: string): string {
-  return `turbopanel-control-plane-${instanceId.slice(0, 12)}`
+  return `turbopanel-control-plane-${instanceId.replaceAll('-', '').slice(0, 12)}`
 }
 
 export function tunnelTarget(tunnelId: string): string {

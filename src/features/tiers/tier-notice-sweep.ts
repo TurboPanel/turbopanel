@@ -20,7 +20,7 @@ import {
   type TierPlacementEvaluation,
   type TierUnwatchedIds,
 } from './tier-enforcement.ts'
-import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { getLatestServerTopologies } from '../servers/server-topology-records.ts'
 
 export const TIER_NOTICE_SWEEP_LIMIT = 100
 export const TIER_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1000
@@ -240,7 +240,7 @@ export type SweepTierNoticesOpts = {
   deployment: MetricsDeploymentKind
   nowMs?: number
   /**
-   * Workers already gates on `shouldSweepTierNotices` (hourly). Deno's 60 s
+   * Workers already gates on the `tierNotices` cadence (hourly). Deno's 60 s
    * tick must not rescan every minute — the module elapsed-time gate covers
    * that unless this is set.
    */
@@ -363,7 +363,7 @@ export async function sweepTierNotices(
   })
   if (eligible.length === 0) return { considered: 0, sent: 0 }
 
-  const topologyByServer = await getLatestTopologyGenerations(
+  const topologyByServer = await getLatestServerTopologies(
     opts.db,
     eligible.map((row) => row.serverId)
   )

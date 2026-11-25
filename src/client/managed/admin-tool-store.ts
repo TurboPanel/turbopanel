@@ -46,7 +46,6 @@ import {
   type AdminToolId,
   adminToolCompose,
 } from '../../features/managed/admin-tools/templates.ts'
-import { storedDaemonFeatures } from '../environments/destroy-data.ts'
 import { reconcileServicesForEnvironment } from '../environments/reconcile-after-compose-save.ts'
 import { isProjectDisplayNameTaken } from '../display-name-uniqueness.ts'
 import {
@@ -95,7 +94,6 @@ export type AdminToolStore = {
   /** The control plane's own refusal sentence for a hostname it serves, or `null`. */
   panelHostnameRefusal: (hostname: string) => Promise<string | null>
   hostnameInUse: (hostname: string) => Promise<boolean>
-  daemonFeatures: (serverId: string) => Promise<readonly string[]>
   resolveWorkspace: () => Promise<Response | { workspaceId: string; clusterName: string | null }>
   insertProject: (input: NewToolProjectInput) => Promise<NewToolProject | Refusal>
   bind: (environmentId: string, loginId: string) => Promise<{ serviceId: string } | Refusal>
@@ -272,7 +270,6 @@ export function createDbAdminToolStore(c: Context<AppEnv>, scope: AdminToolScope
         .limit(1)
       return taken.length > 0
     },
-    daemonFeatures: (serverId) => storedDaemonFeatures(db, serverId),
     resolveWorkspace: async () => {
       const [cluster] = await db
         .select({ name: project.name, workspaceId: project.workspaceId })

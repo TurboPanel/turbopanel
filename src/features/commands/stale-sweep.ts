@@ -51,7 +51,7 @@ import {
   DEPLOY_WAIT_LIMIT_MS,
   deployRunState,
 } from './deploy-wait.ts'
-import { loadDeployRunCapMs, serverHasCommandRecovery } from './deploy-wait-settings.ts'
+import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
@@ -80,19 +80,13 @@ export type StaleCommandCandidate = {
   progress?: unknown
   /**
    * `command.updated_at`: when the server last reported. A running deploy on a
-   * server with {@link StaleCommandCandidate.recovery} is stranded only after
-   * the server has been quiet for the reconcile window.
+   * server is stranded only after the server has been quiet for the reconcile
+   * window.
    */
   updatedAt?: string
   /**
-   * The server's daemon sends signs of life and keeps results until they are
-   * confirmed (`command-recovery-v1`). Without it a running deploy keeps the
-   * fixed run cap.
-   */
-  recovery?: boolean
-  /**
    * The deploy time limit of the server's organization, in milliseconds
-   * (30 minutes when not given). Only used with {@link StaleCommandCandidate.recovery}.
+   * (30 minutes when not given).
    */
   deployRunCapMs?: number
 }
@@ -159,11 +153,11 @@ function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: numbe
     nowMs,
   })
   if (run.state === 'running') {
-    // On a server that sends signs of life a running deploy is stranded when it is still
-    // reported on and has run past the deploy time limit (`runningSince` leaves out quiet
-    // time), when nobody has heard from the server for the whole reconcile window, or past
-    // the whole wait limit. Otherwise, or without a last-heard time, the fixed cap.
-    const lastHeard = row.recovery === true ? toMs(row.updatedAt ?? null) : null
+    // A running deploy is stranded when it is still reported on and has run past the deploy
+    // time limit (`runningSince` leaves out quiet time), when nobody has heard from the
+    // server for the whole reconcile window, or past the whole wait limit. Without a
+    // last-heard time, the fixed cap.
+    const lastHeard = toMs(row.updatedAt ?? null)
     if (lastHeard === null) return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
     const reporting = nowMs - lastHeard < DEPLOY_RUN_SILENCE_MS
     return (
@@ -285,15 +279,6 @@ export async function sweepStaleCommands(
     .limit(limit)
 
   let swept = 0
-  const recoveryByServer = new Map<string, Promise<boolean>>()
-  const serverRecovery = (serverId: string): Promise<boolean> => {
-    let known = recoveryByServer.get(serverId)
-    if (known === undefined) {
-      known = serverHasCommandRecovery(db, serverId)
-      recoveryByServer.set(serverId, known)
-    }
-    return known
-  }
   const runCapByServer = new Map<string, Promise<number>>()
   const serverRunCap = (serverId: string): Promise<number> => {
     let known = runCapByServer.get(serverId)
@@ -308,7 +293,6 @@ export async function sweepStaleCommands(
       candidate.name === 'environment.deploy'
         ? {
             ...candidate,
-            recovery: await serverRecovery(candidate.serverId),
             deployRunCapMs: await serverRunCap(candidate.serverId),
           }
         : candidate

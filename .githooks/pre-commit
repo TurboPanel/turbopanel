@@ -21,6 +21,39 @@ cd "$ROOT"
 # TURBOPANEL_SKIP_HOOK_TESTS does not skip it: it is a format check, not a test
 # run. To commit a change whose whole-file reflow goes in its own commit, set
 # TURBOPANEL_SKIP_HOOK_FORMAT=1 for that commit.
+# The checkout's dev mode: TURBOPANEL_DEV_ENV in <repos folder>/.turbopanel-dev-mode
+# (written by dev/scripts/setup.sh on the editing machine, never in the Vagrant
+# guest). The repos folder is the parent of the main checkout, also when this
+# is a worktree. The file is parsed with sed, never sourced.
+tp_precommit_dev_env() {
+  _common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _common=""
+  if [ -n "$_common" ]; then
+    _folder=$(CDPATH= cd -- "$_common/../.." 2>/dev/null && pwd) || _folder=""
+  else
+    _folder=""
+  fi
+  [ -n "$_folder" ] || _folder=$(CDPATH= cd -- "$ROOT/.." 2>/dev/null && pwd) || return 0
+  sed -n "s/^TURBOPANEL_DEV_ENV='\(.*\)'\$/\1/p" "$_folder/.turbopanel-dev-mode" 2>/dev/null | tail -n 1
+  return 0
+}
+
+# On a Vagrant or Incus host the toolchain lives in the guest, and the host
+# needs no Node: a node_modules/.bin/prettier shim there only fails with
+# `node: not found`. Skip the format check (CI and the guest still run it)
+# when the mode file says vagrant or incus, or when Node is not usable. A Direct
+# machine with Node, the Vagrant guest and CI are unchanged.
+case "$(tp_precommit_dev_env)" in
+  vagrant | incus)
+    echo "pre-commit: Vagrant/Incus host - Prettier skipped, secret scan only (the guest and CI run the checks)" >&2
+    exit 0
+    ;;
+  *) ;;
+esac
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: no Node on this host - Prettier skipped, secret scan only (the guest and CI run the checks)" >&2
+  exit 0
+fi
+
 check_staged_format() {
   if [ "${TURBOPANEL_SKIP_HOOK_FORMAT:-}" = "1" ]; then
     echo "pre-commit: Prettier check skipped (TURBOPANEL_SKIP_HOOK_FORMAT=1)" >&2

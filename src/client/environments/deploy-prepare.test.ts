@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from '@std/assert'
+import type { TaskRecord } from '../../features/schedule/task-records.ts'
+import { assertEquals, assertNotEquals, assertRejects } from '@std/assert'
 import type { EnvironmentDeploySite } from '../../contracts/commands/schemas.ts'
 import { describe, it } from '@std/testing/bdd'
 import {
@@ -6,11 +7,7 @@ import {
   collectHealthCheckWarnings,
 } from '../../features/compose/apply-service-options.ts'
 import { assertComposeDocument, type SiteSpec } from '../../features/compose/index.ts'
-import {
-  dockerVolumeNameFromStorageId,
-  principalHomeDir,
-  resolveDockerVolumeName,
-} from '../../lib/naming.ts'
+import { dockerVolumeNameFromStorageId, principalHomeDir } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
 import { sumServiceResourceUsage } from '../../features/organizations/resource-limits.ts'
 import type { ResolvedResources, ResolvedService } from '../../features/compose/ir.ts'
@@ -37,8 +34,10 @@ import {
   listContainerComposeNames,
   loadPrincipalMaterial,
   detachMountsOfRemovedServices,
+  secretNotInjectedWarnings,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
+  managedNetworkNamesForDeploy,
   mergeProjectEnvironmentCompose,
   nativeAppServicesForDeploy,
   readHostingProxyFromOptions,
@@ -195,6 +194,37 @@ describe('deploy-prepare helpers', () => {
     ])
     // Without a co-resident binding the service still stays off the network.
     assertEquals(localManagedNetworkServiceNames(['api', 'worker'], remote, new Set()), [])
+  })
+
+  it('hands a service:x binding to x after the local and remote sort', () => {
+    const services = {
+      vpn: { image: 'vpn' },
+      qbittorrent: { image: 'qbt', network_mode: 'service:vpn' },
+      tools: { image: 'tools', network_mode: 'container:other' },
+    }
+    const hosts = [{ name: 'svc-in', address: '203.0.113.254' }]
+    // vpn is remote-only, qbittorrent is local: vpn still joins the local network.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['vpn', 'qbittorrent'],
+        new Map([['vpn', hosts]]),
+        new Set(),
+        services
+      ),
+      ['vpn']
+    )
+    // qbittorrent is remote-only and vpn has no binding: nothing joins.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['qbittorrent'],
+        new Map([['qbittorrent', hosts]]),
+        new Set(),
+        services
+      ),
+      []
+    )
+    // container:x has no service to hand it to.
+    assertEquals(managedNetworkNamesForDeploy(['tools'], undefined, undefined, services), [])
   })
 
   it('warns only when the operator sets healthCheck.policy to warn', () => {
@@ -420,6 +450,15 @@ function createSelectWhereDb<T>(rows: T[]): Db {
   } as unknown as Db
 }
 
+type StorageMaterialParams = Parameters<typeof loadStorageMaterial>[1]
+
+/** `loadStorageMaterial` for a case that must produce material, not a refusal. */
+async function loadMaterial(db: Db, params: StorageMaterialParams) {
+  const result = await loadStorageMaterial(db, params)
+  if (!Array.isArray(result)) throw new TypeError(`unexpected refusal: ${result.kind}`)
+  return result
+}
+
 function createStorageMaterialDb(opts: {
   locations: LocationFixtureRow[]
   mounts?: MountFixtureRow[]
@@ -520,11 +559,40 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 1)
     assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.locationId, locationId)
     assertEquals(material[0]?.provider, 'path')
+  })
+
+  it('refuses an author-chosen external volume instead of dropping it', async () => {
+    const db = createStorageMaterialDb({
+      locations: [
+        volumeLocation({
+          storageId,
+          locationId,
+          locationOptions: { managed: false, externalName: 'someone-elses-data' },
+        }),
+      ],
+    })
+    const refusal = await loadStorageMaterial(db, {
+      ...baseParams,
+      registeredVolumes: [
+        {
+          storageId: '01936b3e-dddd-eeee-ffff-123456789abd',
+          locationId: '01936b3e-dddd-eeee-ffff-0000000000ab',
+          composeKey: 'ext',
+          volumeName: 'someone-elses-data',
+          managed: false,
+        },
+      ],
+    })
+    assertEquals(refusal, {
+      kind: 'docker_volume_name_unsupported',
+      storageId,
+      storageName: 'pgdata',
+    })
   })
 
   it('keeps an explicit location path override', async () => {
@@ -539,7 +607,7 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, '/custom/mount')
   })
 
@@ -547,7 +615,7 @@ describe('loadStorageMaterial principal path locations', () => {
     const db = createStorageMaterialDb({
       locations: [pathLocation({ storageId, locationId })],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
 
@@ -562,7 +630,7 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
 })
@@ -934,32 +1002,71 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 0)
   })
 
-  it('keeps docker volumes without mounts and resolves pinned names', async () => {
+  it('keeps docker volumes without mounts and names them by the storage id', async () => {
     const db = createStorageMaterialDb({
       locations: [
         volumeLocation({
           storageId: volumeStorageId,
           locationId: volumeLocationId,
-          metadata: { dockerVolumeName: 'custom_vol' },
+          metadata: { dockerVolumeName: volumeStorageId },
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 1)
     assertEquals(material[0]?.kind, 'volume')
     assertEquals(material[0]?.provider, 'docker')
     assertEquals(material[0]?.mounts, [])
-    assertEquals(
-      material[0]?.volumeName,
-      resolveDockerVolumeName({
-        storageId: volumeStorageId,
-        pinnedName: 'custom_vol',
+    assertEquals(material[0]?.volumeName, volumeStorageId)
+  })
+
+  it('refuses a docker volume pinned to a name other than its storage id', async () => {
+    for (const kind of ['volume', 'directory', 'file'] as const) {
+      const db = createStorageMaterialDb({
+        locations: [
+          volumeLocation({
+            kind,
+            storageId: volumeStorageId,
+            locationId: volumeLocationId,
+            metadata: { dockerVolumeName: 'custom_vol' },
+          }),
+        ],
       })
-    )
+      assertEquals(
+        await loadStorageMaterial(db, baseParams),
+        {
+          kind: 'docker_volume_name_unsupported',
+          storageId: volumeStorageId,
+          storageName: 'pgdata',
+        },
+        kind
+      )
+    }
+  })
+
+  it('refuses a registered volume pinned to a name other than its storage id', async () => {
+    const db = createStorageMaterialDb({ locations: [] })
+    const refusal = await loadStorageMaterial(db, {
+      ...baseParams,
+      registeredVolumes: [
+        {
+          storageId: volumeStorageId,
+          locationId: volumeLocationId,
+          composeKey: 'data',
+          volumeName: 'custom_vol',
+          managed: true,
+        },
+      ],
+    })
+    assertEquals(refusal, {
+      kind: 'docker_volume_name_unsupported',
+      storageId: volumeStorageId,
+      storageName: 'data',
+    })
   })
 
   it('falls back to storage id when docker volume metadata has no pin', async () => {
@@ -972,7 +1079,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.volumeName, dockerVolumeNameFromStorageId(volumeStorageId))
   })
 
@@ -996,7 +1103,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         },
       ],
     })
-    const material = await loadStorageMaterial(db, {
+    const material = await loadMaterial(db, {
       ...baseParams,
       serviceIds: [serviceId],
       cloneNamesByServiceId: new Map([[serviceId, ['web-1', 'web-2']]]),
@@ -1022,7 +1129,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, {
+    const material = await loadMaterial(db, {
       ...baseParams,
       registeredVolumes: [
         {
@@ -1062,7 +1169,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.contentEnvelope, 'tp1.sealed.example')
     assertEquals(material[0]?.principalId, principalId)
@@ -1275,6 +1382,73 @@ describe('attachPrincipalsToSites', () => {
         throw new TypeError('expected pinned sites')
       }
       assertEquals(result[0]?.principal?.principalId, principalId)
+    })
+  })
+
+  describe('task rows as site cron', () => {
+    const task: TaskRecord = {
+      id: '00000000-0000-4000-8000-000000000001',
+      serviceId,
+      name: 'Nightly backup',
+      schedule: '30 2 * * *',
+      command: '/usr/bin/php artisan schedule:run',
+      timezone: null,
+      isEnabled: true,
+      concurrencyPolicy: 'forbid',
+      timeoutSeconds: null,
+      metadata: null,
+      options: null,
+      createdAt: '2026-09-18T00:00:00.000Z',
+      updatedAt: '2026-09-18T00:00:00.000Z',
+    }
+    const material = {
+      principalId,
+      username: 'appuser',
+      home: principalHomeDir('appuser'),
+      shell: '/bin/bash',
+      uid: 15001,
+      gid: 15001,
+    }
+
+    it('puts the task of a site with a principal into site.cron', async () => {
+      const db = createSelectWhereDb([{ principalId, serviceId }])
+      const result = await attachPrincipalsToSites(
+        db,
+        'env-1',
+        [{ id: serviceId, composeServiceName: 'site' }],
+        [material],
+        [site],
+        NO_COMPOSE_PRINCIPALS,
+        new Map([['site', [task]]])
+      )
+      if ('kind' in result) throw new TypeError('expected pinned sites')
+      assertEquals(result[0]?.cron, [
+        {
+          name: 'nightly-backup',
+          schedule: '*-*-* 2:30:00',
+          command: ['/usr/bin/php', 'artisan', 'schedule:run'],
+          concurrencyPolicy: 'forbid',
+        },
+      ])
+      assertEquals(result[0]?.principal?.principalId, principalId)
+    })
+
+    it('refuses a site with a task and no resolvable principal as site_cron_unowned', async () => {
+      // The compose declares an account alias that resolves to nobody.
+      const db = createSelectWhereDb([])
+      const result = await attachPrincipalsToSites(
+        db,
+        'env-1',
+        [{ id: serviceId, composeServiceName: 'site' }],
+        [],
+        [site],
+        {
+          principalIdByAlias: new Map<string, string>(),
+          aliasByComposeServiceName: new Map([['site', 'app']]),
+        },
+        new Map([['site', [task]]])
+      )
+      assertEquals(result, { kind: 'site_cron_unowned', composeServiceName: 'site' })
     })
   })
 
@@ -1919,6 +2093,51 @@ describe('resolveSitesForMode and toPreparedDeployResult', () => {
     assertEquals(prepared.variableMaterial.length, 1)
     assertEquals(prepared.storageMaterial.length, 1)
     assertEquals(prepared.dockerExternalNetworks, ['edge'])
+  })
+
+  it('carries composeCheckout and hashes its commit, not its credential', async () => {
+    const parts = (commitSha: string, credential: string) => ({
+      composeYaml: 'services: {}\n',
+      composeFiles: [
+        { filename: 'compose.yaml', role: 'runtime' as const, content: 'services: {}\n' },
+      ],
+      hooks: [],
+      variableMaterial: [],
+      storageMaterial: [],
+      principalMaterial: [],
+      sites: [],
+      nativeAppServices: [],
+      sourceMaterial: [],
+      composeCheckout: {
+        sourceId: 'src-1',
+        provider: 'git' as const,
+        cloneUrl: 'https://git.example.net/acme/stack.git',
+        ref: 'main',
+        commitSha,
+        composePath: 'compose.yaml',
+        credential,
+      },
+      dockerExternalNetworks: [],
+      managedNetworkServices: [],
+      containers: [],
+      ingressServices: [],
+      expansion: new Map(),
+      registeredVolumes: [],
+      warnings: [],
+      replicaCounts: {},
+      hashInputs: {},
+    })
+    const first = await toPreparedDeployResult('deploy', parts('a'.repeat(40), 'tpdaemon.one'))
+    const resealed = await toPreparedDeployResult('deploy', parts('a'.repeat(40), 'tpdaemon.two'))
+    const moved = await toPreparedDeployResult('deploy', parts('b'.repeat(40), 'tpdaemon.one'))
+    assertEquals(first.composeCheckout?.commitSha, 'a'.repeat(40))
+    assertEquals(first.desiredHash, resealed.desiredHash)
+    assertNotEquals(first.desiredHash, moved.desiredHash)
+    const without = await toPreparedDeployResult('deploy', {
+      ...parts('a'.repeat(40), 'x'),
+      composeCheckout: undefined,
+    })
+    assertEquals('composeCheckout' in without, false)
   })
 
   it('injects secret placeholders only in preview documentForServiceOptions', () => {
@@ -2605,5 +2824,23 @@ describe('detachMountsOfRemovedServices', () => {
     )
     assertEquals(material.length, 1)
     assertEquals(material[0]!.mounts, [])
+  })
+})
+
+describe('secretNotInjectedWarnings', () => {
+  it('gives one warning per secret that reached no container', () => {
+    const out = secretNotInjectedWarnings([
+      { key: 'API_KEY', composeServiceNames: ['web', 'worker'] },
+    ])
+    assertEquals(out.length, 1)
+    assertEquals(out[0]!.code, 'secret_variable_not_injected')
+    assertEquals(out[0]!.details, { variable: 'API_KEY', composeServiceNames: ['web', 'worker'] })
+    assertEquals(out[0]!.message.includes('NAME: "{$API_KEY}"'), true)
+    assertEquals(out[0]!.message.includes('NAME_FILE'), true)
+    assertEquals(out[0]!.message.includes('configs:'), true)
+  })
+
+  it('says nothing when every secret reached a container', () => {
+    assertEquals(secretNotInjectedWarnings([]), [])
   })
 })

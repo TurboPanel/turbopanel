@@ -1,8 +1,7 @@
 /**
- * Starting, checking and retrying a DNS-validated order are refused on both
- * editions, in plain words, for anyone signed in and before anything else is
- * read; a request without a session is still turned away first. The list's
- * rows say the certificate will not renew from the control plane.
+ * Every DNS certificate route needs a session on both editions. An uploaded
+ * panel-managed row says it will not renew from the control plane; a row
+ * ordered through a server shows its renewal and retry times.
  */
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
@@ -19,8 +18,6 @@ import {
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import {
   NO_RENEWAL_MESSAGE,
-  ORDERING_OFF_ERROR,
-  ORDERING_OFF_MESSAGE,
   registerOrganizationDnsCertificateRoutes,
   toApiDnsCertificate,
 } from './dns-certificate-routes.ts'
@@ -59,19 +56,6 @@ async function buildApp(runtime: 'deno' | 'workers') {
 }
 
 for (const runtime of ['deno', 'workers'] as const) {
-  test(`${runtime}: starting, checking and retrying an order are refused in plain words`, async () => {
-    const { app, cookie } = await buildApp(runtime)
-    for (const path of ORDER_PATHS) {
-      const res = await app.request(path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', Cookie: cookie },
-        body: JSON.stringify({ carrierId: crypto.randomUUID(), names: ['a.example.com'] }),
-      })
-      assertEquals(res.status, 422, path)
-      assertEquals(await res.json(), { error: ORDERING_OFF_ERROR, message: ORDERING_OFF_MESSAGE })
-    }
-  })
-
   test(`${runtime}: every route still needs a session`, async () => {
     const { app } = await buildApp(runtime)
     for (const path of ORDER_PATHS) {
@@ -117,5 +101,22 @@ test('a listed certificate says it will not renew, and shows no renewal or retry
   assertEquals(
     toApiDnsCertificate(row({ warning: 'The token is gone.' }), now).warning,
     'The token is gone.'
+  )
+})
+
+test('an order placed by a server shows its renewal and retry times and no no-renewal warning', () => {
+  const now = new Date('2026-11-04T00:00:00.000Z')
+  const ordered = {
+    ...row({
+      challengeType: 'dns-01',
+      renewAt: '2026-12-01T00:00:00.000Z',
+      nextAttemptAt: '2026-11-05T00:00:00.000Z',
+    }),
+    source: 'lets_encrypt',
+  } as unknown as typeof tls.$inferSelect
+  const shown = toApiDnsCertificate(ordered, now)
+  assertEquals(
+    [shown.warning, shown.renewAt, shown.nextAttemptAt],
+    [null, '2026-12-01T00:00:00.000Z', '2026-11-05T00:00:00.000Z']
   )
 })

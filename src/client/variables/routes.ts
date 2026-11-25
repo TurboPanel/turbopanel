@@ -9,6 +9,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { variable } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { buildEnvSaveProblem } from '../../features/compose/build-env.ts'
 import {
   assertCanCreateOr403,
@@ -106,6 +107,7 @@ async function sealVariableValue(c: Context<AppEnv>, value: string): Promise<str
 }
 
 type ExistingVariableForPatch = {
+  key: string
   isSecret: boolean
   value: string
   isForBuild: boolean
@@ -256,6 +258,16 @@ async function buildVariablePatchFields(
 
   if (secretResult.toggled) {
     updateFields.isSecret = secretResult.nextIsSecret
+  }
+
+  // Only when the patch renames the variable or changes its build flag, so a
+  // variable saved before this rule can still have its value or note edited.
+  if (updateFields.key !== undefined || updateFields.isForBuild !== undefined) {
+    const buildProblem = buildEnvSaveProblem(
+      updateFields.key ?? existing.key,
+      updateFields.isForBuild ?? existing.isForBuild
+    )
+    if (buildProblem) return apiError(c, 400, 'build_variable_name_refused', buildProblem)
   }
 
   const valueError = await applyValueAndSecretPatch(
@@ -604,6 +616,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const existingRows = await db
       .select({
+        key: variable.key,
         isSecret: variable.isSecret,
         value: variable.value,
         isForBuild: variable.isForBuild,

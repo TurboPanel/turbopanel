@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
 
 /**
@@ -46,11 +46,11 @@ test('resolveWorkspaceKindForEntity returns null for unknown entity types', asyn
 test('resolveWorkspaceKindForEntity resolves workspace rows via select()', async () => {
   assertEquals(
     await resolveWorkspaceKindForEntity(
-      kindDb({ selectKind: WORKSPACE_KIND_SYSTEM }),
+      kindDb({ selectKind: WORKSPACE_KIND_TURBOPANEL }),
       'workspace',
       'w1'
     ),
-    WORKSPACE_KIND_SYSTEM
+    WORKSPACE_KIND_TURBOPANEL
   )
   assertEquals(
     await resolveWorkspaceKindForEntity(kindDb({ selectKind: null }), 'workspace', 'w1'),
@@ -85,11 +85,11 @@ test('resolveWorkspaceKindForEntity tries principal project and tenancy paths', 
   // First execute empty, second (tenancy) hits.
   assertEquals(
     await resolveWorkspaceKindForEntity(
-      kindDb({ executeKinds: [null, WORKSPACE_KIND_SYSTEM] }),
+      kindDb({ executeKinds: [null, WORKSPACE_KIND_TURBOPANEL] }),
       'principal',
       'p1'
     ),
-    WORKSPACE_KIND_SYSTEM
+    WORKSPACE_KIND_TURBOPANEL
   )
 
   // The project path hits first.

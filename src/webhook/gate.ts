@@ -67,6 +67,7 @@ import {
 } from '../features/webhook-delivery/webhook-delivery-records.ts'
 import { resolveClientIp } from '../client/authn/http.ts'
 import { readBoundedBodyBytes } from '../lib/http/bounded-body.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 /** GitHub honors this on 429; the webhook Redis buckets are 60s windows. */
 export const WEBHOOK_RATE_LIMIT_RETRY_AFTER_SECONDS = 60
@@ -91,8 +92,7 @@ export type GateContext = {
  * secret actually verifies.
  */
 export type GateResolution<THolder> =
-  | { ok: true; candidates: THolder[] }
-  | { ok: false; reason: string }
+  { ok: true; candidates: THolder[] } | { ok: false; reason: string }
 
 /**
  * What one dispatched delivery decided.
@@ -154,12 +154,24 @@ export type WebhookGate<THolder> = {
    * the body may parse `raw` itself — the same escape hatch {@link verify} uses.
    */
   eventName(ctx: GateContext, raw: Uint8Array): string | null
+  /**
+   * True when the delivery id and event name are headers the signature does not
+   * cover (GitHub's HMAC and GitLab's shared token authenticate the sender or
+   * the body, never `X-GitHub-Delivery` / `X-GitHub-Event` or the GitLab
+   * equivalents). The gate then also claims a digest of the body, so a captured
+   * body replayed under a fresh delivery id or a relabelled event is still
+   * recognised and processed once. Returns the verified holder's own id, which
+   * scopes the digest: GitLab sends the same bytes to every hook on a project,
+   * and each forge's hook must still run. Leave unset when the id is inside the
+   * signed body (Stripe).
+   */
+  bodyDigestScope?(holder: THolder): string
   /** Step 6. */
   dispatch(
     ctx: GateContext,
     holder: THolder,
     event: string,
-    payload: Record<string, unknown>,
+    payload: Record<string, unknown>
   ): Promise<DeliveryOutcome>
 }
 
@@ -193,7 +205,7 @@ async function selectVerified<THolder>(
   gate: WebhookGate<THolder>,
   candidates: THolder[],
   raw: Uint8Array,
-  ctx: GateContext,
+  ctx: GateContext
 ): Promise<THolder | null> {
   for (const candidate of candidates) {
     if (gate.isUnconfigured(candidate)) continue
@@ -209,7 +221,7 @@ async function selectVerified<THolder>(
 async function withinRateLimit<THolder>(
   gate: WebhookGate<THolder>,
   opts: WebhookGateOpts,
-  c: Context<AppEnv>,
+  c: Context<AppEnv>
 ): Promise<boolean> {
   if (!opts.rateLimiter) return true
   const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
@@ -230,31 +242,63 @@ async function withinRateLimit<THolder>(
  * byte count crosses `maxBodyBytes`, so a chunked-encoded upload with no (or a
  * lying) `Content-Length` is never fully buffered either.
  */
-async function readRawBody(
-  c: Context<AppEnv>,
-  maxBodyBytes: number,
-): Promise<Uint8Array | null> {
+async function readRawBody(c: Context<AppEnv>, maxBodyBytes: number): Promise<Uint8Array | null> {
   const read = await readBoundedBodyBytes(c, maxBodyBytes)
   if (!read.ok) return null
   return read.bytes
 }
 
+/**
+ * Ledger key for the body itself, per verified holder. Deliberately excludes
+ * the event header: an unsigned label must not let an already-processed body
+ * run a second time under a different handler.
+ */
+async function bodyDigestKey(scope: string, raw: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw as BufferSource))
+  let hex = ''
+  for (const byte of digest) hex += byte.toString(16).padStart(2, '0')
+  return `body-sha256:${scope}:${hex}`
+}
+
+/** Every ledger key this delivery holds: its id and, when guarded, its body digest. */
+type Claims = readonly string[]
+
+async function releaseClaims<THolder>(
+  gate: WebhookGate<THolder>,
+  db: Db,
+  claims: Claims
+): Promise<void> {
+  // Every key is attempted even if one delete fails, so no key stays held.
+  const results = await Promise.allSettled(
+    claims.map((externalDeliveryId) =>
+      releaseWebhookDelivery(db, { provider: gate.kind, externalDeliveryId })
+    )
+  )
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (failed) throw failed.reason
+}
+
 async function releaseClaimBestEffort<THolder>(
   gate: WebhookGate<THolder>,
   db: Db,
-  deliveryId: string,
+  claims: Claims
 ): Promise<void> {
   try {
-    await releaseWebhookDelivery(db, {
-      provider: gate.kind,
-      externalDeliveryId: deliveryId,
-    })
+    await releaseClaims(gate, db, claims)
   } catch (err) {
     logWarn(
       gate.logScope,
-      `failed to release delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+      `failed to release delivery claims ${claims.join(',')}: ${err instanceof Error ? err.message : String(err)}`
     )
   }
+}
+
+/** The delivery being dispatched after its claims were taken. */
+interface ClaimedDelivery {
+  deliveryId: string
+  claims: Claims
+  event: string
+  raw: Uint8Array
 }
 
 /**
@@ -267,40 +311,36 @@ async function dispatchClaimedDelivery<THolder>(
   gate: WebhookGate<THolder>,
   ctx: GateContext,
   holder: THolder,
-  deliveryId: string,
-  event: string,
-  raw: Uint8Array,
+  delivery: ClaimedDelivery
 ): Promise<Response> {
+  const { deliveryId, claims, event, raw } = delivery
   try {
     const payload = parsePayload(raw)
-    if (!payload) return c.json({ error: 'Invalid request' }, 400)
+    if (!payload) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     const outcome = await gate.dispatch(ctx, holder, event, payload)
     if (outcome.retry) {
-      await releaseWebhookDelivery(ctx.db, {
-        provider: gate.kind,
-        externalDeliveryId: deliveryId,
-      })
+      await releaseClaims(gate, ctx.db, claims)
       logWarn(
         gate.logScope,
         `delivery ${deliveryId} (${event}) could not be acted on; asking for a retry`,
-        JSON.stringify(outcome.result),
+        JSON.stringify(outcome.result)
       )
       return c.json({ error: 'retry' }, 503)
     }
     logInfo(
       gate.logScope,
       `delivery ${deliveryId} (${event}) accepted`,
-      JSON.stringify(outcome.result),
+      JSON.stringify(outcome.result)
     )
     return c.json({ ok: true as const })
   } catch (err) {
-    await releaseClaimBestEffort(gate, ctx.db, deliveryId)
+    await releaseClaimBestEffort(gate, ctx.db, claims)
     logWarn(
       gate.logScope,
       `delivery ${deliveryId} (${event}) threw after claim; asking for a retry: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     )
     return c.json({ error: 'retry' }, 503)
   }
@@ -322,13 +362,13 @@ export function registerWebhookGate<THolder>(
   app: Hono<AppEnv>,
   paths: readonly string[],
   gate: WebhookGate<THolder>,
-  opts: WebhookGateOpts,
+  opts: WebhookGateOpts
 ): void {
   const handler = async (c: Context<AppEnv>) => {
     // 1. Rate limit first — it is what protects the verification work below.
     if (!(await withinRateLimit(gate, opts, c))) {
       c.header('Retry-After', String(WEBHOOK_RATE_LIMIT_RETRY_AFTER_SECONDS))
-      return c.json({ error: 'Too many requests' }, 429)
+      return apiError(c, 429, 'rate_limited', 'Too many requests')
     }
 
     const db = getDb(c)
@@ -371,26 +411,36 @@ export function registerWebhookGate<THolder>(
     }
 
     const deliveryId = await gate.deliveryId(ctx, raw)
-    if (!deliveryId) return c.json({ error: 'Invalid request' }, 400)
+    if (!deliveryId) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     const event = gate.eventName(ctx, raw)
-    if (!event) return c.json({ error: 'Invalid request' }, 400)
+    if (!event) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     // 5. Claim the delivery. A redelivery of work already done answers 204
     //    without re-running it.
-    const claimed = await claimWebhookDelivery(db, {
-      provider: gate.kind,
-      externalDeliveryId: deliveryId,
-      event,
-    })
-    if (!claimed) {
-      logInfo(gate.logScope, `duplicate delivery ${deliveryId} (${event}) ignored`)
-      return c.body(null, 204)
+    //    Signed-body providers also claim the body digest first, so the same
+    //    bytes are processed once whatever the unsigned headers say.
+    const claims: string[] = []
+    const keys = gate.bodyDigestScope
+      ? [await bodyDigestKey(gate.bodyDigestScope(holder), raw), deliveryId]
+      : [deliveryId]
+    for (const key of keys) {
+      const claimed = await claimWebhookDelivery(db, {
+        provider: gate.kind,
+        externalDeliveryId: key,
+        event,
+      })
+      if (!claimed) {
+        await releaseClaimBestEffort(gate, db, claims)
+        logInfo(gate.logScope, `duplicate delivery ${deliveryId} (${event}) ignored`)
+        return c.body(null, 204)
+      }
+      claims.push(key)
     }
 
     // 6. Parse and act. Unexpected throws after the claim must release so
     //    the provider's retry is not answered 204.
-    return await dispatchClaimedDelivery(c, gate, ctx, holder, deliveryId, event, raw)
+    return await dispatchClaimedDelivery(c, gate, ctx, holder, { deliveryId, claims, event, raw })
   }
 
   for (const path of paths) app.post(path, handler)

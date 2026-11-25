@@ -282,6 +282,79 @@ export const hostingSchemas = {
       },
     },
   },
+  HostingNameCertificateChoice: {
+    type: 'object',
+    required: ['hostname', 'certificate'],
+    properties: {
+      hostname: { type: 'string' },
+      certificate: {
+        type: 'string',
+        enum: [
+          'cloudflare_origin',
+          'letsencrypt_http',
+          'letsencrypt_dns',
+          'self_signed',
+          'library',
+        ],
+        description:
+          'The certificate this name uses. `self_signed` carries no `tlsId`; `library` needs one that covers the name.',
+      },
+      tlsId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The organization certificate this name pins; null for self-signed.',
+      },
+    },
+  },
+  HostingNameCertificate: {
+    allOf: [
+      { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+      {
+        type: 'object',
+        required: ['certificateOptions', 'originCertificateIssue'],
+        properties: {
+          originCertificateIssue: {
+            description:
+              'Why a name set to `cloudflare_origin` has no certificate yet (`queued` while no attempt has run); null when the name holds one. Shown instead of a silent wait. The scheduled retry tries again after `nextTryAt` (a save or a tunnel attach tries at once).',
+            oneOf: [
+              { type: 'null' },
+              {
+                type: 'object',
+                required: ['code', 'message', 'failedAt', 'attempts', 'nextTryAt'],
+                properties: {
+                  code: {
+                    type: 'string',
+                    enum: [
+                      'no_badge',
+                      'provider_error',
+                      'unsupported_provider',
+                      'zone_not_covered',
+                      'secrets_unavailable',
+                      'badge_cannot_certify',
+                      'origin_certificate_limit',
+                      'origin_certificate_names',
+                      'queued',
+                    ],
+                    description:
+                      "`queued`: waiting for the first attempt (`failedAt` is null, `attempts` is 0). `no_badge`: no API token of the organization has certificate rights for the name's zone. `provider_error`: the provider refused or failed. The others are the issuing code's refusals.",
+                  },
+                  message: { type: 'string', description: 'Plain words, safe to show.' },
+                  failedAt: { type: ['string', 'null'], format: 'date-time' },
+                  attempts: { type: 'integer', minimum: 0 },
+                  nextTryAt: { type: ['string', 'null'], format: 'date-time' },
+                },
+              },
+            ],
+          },
+          certificateOptions: {
+            type: 'object',
+            description:
+              'Every choice for this name with its availability and the default. Library options list each organization certificate that covers the name, wildcards included.',
+          },
+        },
+      },
+    ],
+  },
   HostingRow: {
     type: 'object',
     required: ['id', 'serviceId', 'createdAt', 'updatedAt'],
@@ -292,7 +365,14 @@ export const hostingSchemas = {
       serviceId: { type: 'string' },
       tlsId: {
         type: ['string', 'null'],
-        description: 'Pinned org TLS certificate id; null = basic self-signed (Caddy tls internal)',
+        description:
+          'Whole-site pinned org TLS certificate id; null = basic self-signed (Caddy tls internal). Each name also has its own choice in `names`, which decides when they differ.',
+      },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificate' },
+        description:
+          'The certificate choice of every name the site answers on, www names included.',
       },
       ipId: {
         type: ['string', 'null'],
@@ -372,7 +452,7 @@ export const hostingSchemas = {
       originVerified: {
         type: 'boolean',
         description:
-          "True: the tunnel checks the server's certificate (the verified connection is in effect). False: the tunnel accepts the server's own certificate without checking it, on purpose.",
+          "True: the tunnel checks the certificate this name carries (its certificate is in place and every deploy of the site has carried it). False: the tunnel accepts the server's own certificate without checking it.",
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention'] },
     },
@@ -396,6 +476,12 @@ export const hostingSchemas = {
       serviceId: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
       ipId: { type: ['string', 'null'], format: 'uuid' },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+        description:
+          'One certificate choice per served name. Names left out keep their choice. Names that get different certificates need a server whose agent supports it; otherwise the deploy is refused with `name_certificates_need_update`.',
+      },
       metadata: { type: 'object' },
       options: { $ref: '#/components/schemas/HostingOptions' },
     },
@@ -407,6 +493,12 @@ export const hostingSchemas = {
       description: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
       ipId: { type: ['string', 'null'], format: 'uuid' },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+        description:
+          'One certificate choice per served name. Names left out keep their choice. Names that get different certificates need a server whose agent supports it; otherwise the deploy is refused with `name_certificates_need_update`.',
+      },
       metadata: { type: 'object' },
       options: { $ref: '#/components/schemas/HostingOptions' },
     },
@@ -561,16 +653,95 @@ const composeReleasePaths = {
   },
 }
 
+const serverUpdateSchema = {
+  type: 'string',
+  enum: ['next_deploy', 'not_deployed', 'no_environment'],
+  description:
+    "What is left on the servers. `next_deploy`: the route is still served and goes at the environment's next deploy (a removal never runs a deploy of its own, which would ship other undeployed edits). `not_deployed`: no deploy has finished yet, so no server holds the route. `no_environment`: the hosting had no environment. The name is free in the panel in every case.",
+}
+
+const removeNowPaths = {
+  [`${hostingIdPath}/remove-now`]: {
+    post: {
+      tags: ['Hostings'],
+      summary: 'Release a compose-made hostname now',
+      description:
+        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. No deploy is started: the servers drop the route at the environment's next deploy, and `serverUpdate` says so. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`. Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Removed, handed back, or already gone',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'removed'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  removed: {
+                    type: 'boolean',
+                    description:
+                      'True when the hosting is gone (also on `alreadyGone`); false for `handed_back`.',
+                  },
+                  alreadyGone: {
+                    type: 'boolean',
+                    enum: [true],
+                    description:
+                      'Present only on a retry for a hosting that no longer exists; nothing else is sent.',
+                  },
+                  outcome: { type: 'string', enum: ['removed', 'handed_back'] },
+                  hostnames: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'The names that were released; empty when handed back.',
+                  },
+                  serverUpdate: serverUpdateSchema,
+                },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Not signed in',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description:
+            'No manage grant, a system-owned hosting, or `reauth_required` (action `hosting.delete`)',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Not a hosting of this organization, or not a well-formed id',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            '`hosting_still_declared`: the compose file still declares this hostname. `hosting_not_owned_by_compose`: the hosting was made in the panel; delete it instead. `environment_deploy_running`: a deploy of this environment is running',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+}
+
 export const hostingPaths = {
   ...basePaths,
   ...letsEncryptPaths,
   ...composeReleasePaths,
+  ...removeNowPaths,
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
       ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       description:
-        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it.",
+        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it. The answer also carries `names`, the hosting's names as a read returns them (with `originCertificateIssue`), so a name set to `cloudflare_origin` shows at once whether it got a certificate or why not. `POST /hostings` answers `names` the same way.",
       responses: {
         ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
           .responses as Record<string, unknown>),
@@ -583,6 +754,22 @@ export const hostingPaths = {
         ...((
           (basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
         ).responses as Record<string, unknown>),
+        '200': {
+          description:
+            'Deleted. The name is free at once; `serverUpdate` says when the servers drop the route',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'serverUpdate'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  serverUpdate: serverUpdateSchema,
+                },
+              },
+            },
+          },
+        },
         ...composeOwnedConflictResponse,
       },
     },

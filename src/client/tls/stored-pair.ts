@@ -18,7 +18,7 @@
 
 import { and, asc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { hosting, tls } from '../../db/schema.ts'
+import { hostname, hosting, tls } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
   neverIssuedSiteCondition,
@@ -91,7 +91,7 @@ export async function runStoredPairSweepTick(
 ): Promise<StoredPairSweepResult> {
   const now = (deps.now ?? (() => new Date()))()
   const result: StoredPairSweepResult = { stamped: 0, cleared: 0, deleted: 0 }
-  const pinned = sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`
+  const pinned = sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`
 
   // A row some hosting pins again is no longer on the way out.
   const back = await db

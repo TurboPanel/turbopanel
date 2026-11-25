@@ -28,6 +28,8 @@ import {
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
 import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
+import type { ComposeDeployValidationError } from '../../features/compose/validate-for-deploy.ts'
+import { sha256Hex } from '../../features/compose/network-shares.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -44,8 +46,10 @@ import type {
   EnvironmentDeployServiceHook,
   EnvironmentDeployCache,
   EnvironmentDeployConfigFile,
+  EnvironmentDeployNetworkShareCredential,
   EnvironmentDeployHelperReach,
   EnvironmentDeploySecretPlanEntry,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployServiceFolder,
   EnvironmentDeployStorageMaterial,
@@ -146,8 +150,12 @@ import {
   assignSlotAddresses,
   buildCompileAddressMaps,
   type HostAccessActor,
+  NETWORK_SHARES_PERMISSION,
+  type NetworkSharesActor,
+  type NetworkSharesUseEvent,
   planEnvironmentDeploy,
   type PlannedDeploy,
+  settleNetworkShares,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
 import {
@@ -185,7 +193,17 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
+import {
+  resolveEffectivePlacementServerId,
+  type ComposeBaseRecord,
+  type TrackedBaseError,
+} from '../../features/projects/project-options.ts'
+import {
+  resolveDeployProjectOptions,
+  storeTrackedBase,
+  previewBaseFallbackMessage,
+  type DeployProjectOptionsMode,
+} from './deploy-tracked-base.ts'
 import {
   type DestroyDataPlan,
   parseDestroyRequest,
@@ -427,6 +445,38 @@ function responseForPrepareError(c: Context<AppEnv>, prepared: DeployPrepareErro
   return c.json(mapped.body, { status: mapped.status as 400 | 409 | 422 })
 }
 
+/**
+ * The tracked compose file could not be used. 422 when the file itself is the
+ * problem (missing, not a compose document), 502 when the repository could not
+ * be reached; the body always names the file and the commit.
+ */
+function responseForTrackedBaseError(c: Context<AppEnv>, error: TrackedBaseError): Response {
+  const status = error.code === 'compose_source_unavailable' ? 502 : 422
+  return c.json(
+    {
+      error: error.code,
+      message: error.message,
+      sourceId: error.sourceId,
+      ref: error.ref,
+      path: error.path,
+      ...(error.commitSha === undefined ? {} : { commitSha: error.commitSha }),
+    },
+    { status }
+  )
+}
+
+/**
+ * A head read of the tracked file is the commit the matching builds must use,
+ * so one deploy is one commit. A trigger that already named a commit keeps it.
+ */
+function selectionPinnedToTrackedBase(
+  selection: DeploySourceSelection,
+  pin: { sourceId: string; ref: string; commitSha: string } | undefined
+): DeploySourceSelection {
+  if (!pin || selection.commitSha !== null) return selection
+  return { ...selection, ref: pin.ref, commitSha: pin.commitSha, sourceId: pin.sourceId }
+}
+
 function responseForFabricGate(
   c: Context<AppEnv>,
   outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
@@ -565,6 +615,8 @@ export async function authorizeDeployRequest(
 }
 
 type DeployCommandCreateParams = DeployActor & {
+  /** The Base a repository-following project used; recorded on the command context. */
+  composeBase: ComposeBaseRecord | null
   serverId: string
   environmentId: string
   projectId: string
@@ -575,6 +627,8 @@ type DeployCommandCreateParams = DeployActor & {
   sites: EnvironmentDeploySite[]
   nativeAppServices: EnvironmentDeployNativeAppService[]
   sourceMaterial: EnvironmentDeploySource[]
+  /** The repository a followed compose file came from (absent: nothing to check out). */
+  composeCheckout?: EnvironmentDeployComposeCheckout
   ingressServices: EnvironmentDeployIngressService[]
   hostingIngress?: EnvironmentDeployIngressService
   /** Set only when `hostings` is non-empty (see prepare). */
@@ -599,6 +653,8 @@ type DeployCommandCreateParams = DeployActor & {
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
   /** Generated config files (parts only) the daemon puts together from `variableMaterial`. */
   configFiles?: EnvironmentDeployConfigFile[]
+  /** Secret credentials of network share volumes (key names; the sealed values are in `variableMaterial`). */
+  networkShareCredentials?: EnvironmentDeployNetworkShareCredential[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -614,6 +670,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
   remoteBuildSourcesApproved: boolean
+  /** The planner's network-share verdict (`PlannedDeploy.allowNetworkShares`). */
+  allowNetworkShares: boolean
   generation: number
   desiredHash: string
   replicaCounts: Record<string, number>
@@ -788,6 +846,7 @@ async function createDeployCommand(
         sites: params.sites,
         nativeAppServices: params.nativeAppServices,
         sourceMaterial: params.sourceMaterial,
+        composeCheckout: params.composeCheckout,
         ingressServices: params.ingressServices,
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
@@ -802,6 +861,7 @@ async function createDeployCommand(
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
         configFiles: params.configFiles,
+        networkShareCredentials: params.networkShareCredentials,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -812,6 +872,7 @@ async function createDeployCommand(
         hostingsOnly: params.hostingsOnly ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
         remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
+        allowNetworkShares: params.allowNetworkShares ? true : undefined,
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
@@ -835,6 +896,7 @@ async function createDeployCommand(
       serverId: params.serverId,
       generation: params.generation,
       desiredHash: params.desiredHash,
+      composeBase: params.composeBase ?? undefined,
       replicaCounts: replicaCounts ?? undefined,
       // A hostings-only run builds nothing, so it publishes no release a
       // rollback could be offered.
@@ -901,6 +963,17 @@ async function deliverDeployCommand(
   }
 }
 
+/**
+ * The repository checkout for a command, as a field to spread. A hostings-only
+ * run builds and starts nothing, so it carries no clone credential.
+ */
+export function composeCheckoutField(
+  checkout: EnvironmentDeployComposeCheckout | undefined,
+  hostingsOnly: boolean | undefined
+): { composeCheckout?: EnvironmentDeployComposeCheckout } {
+  return checkout && !hostingsOnly ? { composeCheckout: checkout } : {}
+}
+
 function createParamsForPreparedServer(
   row: PreparedServerDeploy,
   params: DeployActor & {
@@ -913,7 +986,9 @@ function createParamsForPreparedServer(
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
+    allowNetworkShares: boolean
     selection: DeploySourceSelection
+    composeBase: ComposeBaseRecord | null
     /** Ports other environments already hold on this server; allocation probes past them. */
     reservedListenPorts?: ReadonlySet<number>
     /** The folders planned for this server's deploy; their references ride on the payload. */
@@ -940,6 +1015,7 @@ function createParamsForPreparedServer(
     actorType: params.actorType,
     actorId: params.actorId,
     selection: params.selection,
+    composeBase: params.composeBase,
     environmentId: params.environmentId,
     projectId: params.projectId,
     organizationId: params.organizationId,
@@ -960,6 +1036,7 @@ function createParamsForPreparedServer(
       params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
+    ...composeCheckoutField(row.prepared.composeCheckout, params.hostingsOnly),
     ingressServices: row.prepared.ingressServices,
     ...(row.prepared.hostingIngress ? { hostingIngress: row.prepared.hostingIngress } : {}),
     ...(row.prepared.hostingIngressNetwork
@@ -985,6 +1062,7 @@ function createParamsForPreparedServer(
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
     configFiles: row.prepared.configFiles,
+    networkShareCredentials: row.prepared.networkShareCredentials,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -998,6 +1076,7 @@ function createParamsForPreparedServer(
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
     remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+    allowNetworkShares: params.allowNetworkShares,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -1179,7 +1258,10 @@ async function persistDeployFanOut(
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
+    allowNetworkShares: boolean
     selection: DeploySourceSelection
+    /** The tracked Base this deploy used, recorded on each command's context. */
+    composeBase: ComposeBaseRecord | null
     /** Service rows that left the compose file; each server is asked about its own sites. */
     removedServices?: readonly { id: string; composeServiceName: string }[]
   }
@@ -1243,7 +1325,9 @@ async function persistDeployFanOut(
           engine: params.engine,
           hostLevelApproved: params.hostLevelApproved,
           remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+          allowNetworkShares: params.allowNetworkShares,
           selection: params.selection,
+          composeBase: params.composeBase,
           reservedListenPorts: reservedPorts.get(row.serverId),
         })
         listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
@@ -1410,6 +1494,8 @@ async function preparePreviewByServer(
       serverId,
       organizationId: args.organizationId,
       mode: 'preview',
+      projectOptions: planned.projectOptions,
+      composeBase: planned.composeBase,
       composeValidated: planned.composeValidated,
       releaseIds,
       schedule: scheduleSliceForServer(
@@ -1573,7 +1659,14 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         { actorType: 'user', actorId: auth.userId },
         auth.organizationId,
         false
-      )
+      ),
+      // A preview shows the same refusal a deploy would get and approves nothing.
+      await resolveNetworkSharesActor(
+        db,
+        { actorType: 'user', actorId: auth.userId },
+        auth.organizationId
+      ),
+      { mode: 'preview' }
     )
     if (planned instanceof Response) return planned
 
@@ -1642,7 +1735,23 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
+      // The Base this preview used when the project follows a repository file:
+      // the file at the branch head, or the last deployed one (see `warnings`).
+      composeBase: planned.composeBase,
       warnings: [
+        ...(planned.composeBaseUnreadable
+          ? [
+              {
+                code: 'compose_base_unreadable' as const,
+                message: previewBaseFallbackMessage(planned.composeBaseUnreadable),
+                details: {
+                  sourceId: planned.composeBaseUnreadable.sourceId,
+                  path: planned.composeBaseUnreadable.path,
+                  reason: planned.composeBaseUnreadable.code,
+                },
+              },
+            ]
+          : []),
         ...preparedByServer.flatMap((row) => row.prepared.warnings),
         ...unresolvedInterpolationWarnings(
           first?.prepared.composeYaml ?? '',
@@ -1657,6 +1766,11 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       nativeAppVariables: preparedByServer.flatMap((row) =>
         previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
       ),
+      ...presentFields({
+        serviceVariables: oncePerApp(
+          preparedByServer.flatMap((row) => row.prepared.serviceVariables ?? [])
+        ),
+      }),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
       ),
@@ -1748,6 +1862,73 @@ async function resolveHostAccessActor(
 }
 
 /**
+ * Who is deploying, for network shares: the `environments.deploy_network_shares`
+ * permission on the organization (owner and manager hold it by default, and it
+ * can be granted to other roles). An automated deploy has no person behind it
+ * and is judged on a recorded approval instead.
+ */
+export async function resolveNetworkSharesActor(
+  db: Db,
+  actor: DeployActor,
+  organizationId: string,
+  email: string | null = null
+): Promise<NetworkSharesActor> {
+  if (actor.actorType === 'system') return { kind: 'automated' }
+  const permitted = await can(
+    db,
+    actor.actorId,
+    NETWORK_SHARES_PERMISSION,
+    'organization',
+    organizationId
+  )
+  return permitted ? { kind: 'permitted', userId: actor.actorId, email } : { kind: 'denied' }
+}
+
+/** {@link resolveNetworkSharesActor} for the signed-in request (the email is for the audit row). */
+async function networkSharesActorForRequest(
+  c: Context<AppEnv>,
+  db: Db,
+  auth: DeployRequestAuth
+): Promise<NetworkSharesActor> {
+  const email = c.get('session')?.email
+  return await resolveNetworkSharesActor(db, auth, auth.organizationId, email ?? null)
+}
+
+/**
+ * The history row for an automated deploy that runs network shares under a
+ * recorded approval. Written once the deploy's rows are persisted, like
+ * {@link recordHostAccessUse}; a hostings-only run mounts nothing.
+ */
+export async function recordNetworkSharesUse(
+  db: Db,
+  use: NetworkSharesUseEvent | undefined,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId' | 'selection' | 'hostingsOnly'>,
+  ids: { environmentId: string; projectId: string },
+  record: typeof recordAudit = recordAudit
+): Promise<void> {
+  if (!use || auth.hostingsOnly === true) return
+  await record(db, {
+    organizationId: auth.organizationId,
+    actorUserId: null,
+    actorEmail: null,
+    action: 'compose.network_shares.use',
+    targetType: 'environment',
+    targetId: ids.environmentId,
+    context: {
+      environmentId: ids.environmentId,
+      projectId: ids.projectId,
+      fingerprint: use.fingerprint,
+      volumes: use.volumes,
+      resolved: use.resolved,
+      approvedBy: use.approvedBy,
+      approvedAt: use.approvedAt,
+      automatedActorId: auth.actorId,
+      trigger: hostAccessUseTrigger(auth.selection),
+    },
+  })
+}
+
+/**
  * The history row for an automated deploy that runs host-level content under a
  * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
  * rows are persisted; the approval it names is the one the planner matched, and
@@ -1780,21 +1961,77 @@ export async function recordHostAccessUse(
   )
 }
 
+/**
+ * The share half of the actor gate that needs the prepared deploy: what the
+ * shares resolved to on each server (see `settleNetworkShares`).
+ */
+export async function settlePreparedNetworkShares(
+  db: Db,
+  planned: Pick<PlannedDeploy, 'networkShares' | 'projectId'>,
+  preparedByServer: ReadonlyArray<{
+    prepared: Pick<PreparedDeployCompose, 'networkSharesResolved'>
+  }>,
+  ctx: { auth: DeployRequestAuth; environmentId: string }
+): Promise<{ error: ComposeDeployValidationError } | { use?: NetworkSharesUseEvent }> {
+  if (!planned.networkShares) return {}
+  const resolved = await Promise.all(
+    preparedByServer.flatMap((row) =>
+      row.prepared.networkSharesResolved === undefined
+        ? []
+        : [sha256Hex(row.prepared.networkSharesResolved)]
+    )
+  )
+  return await settleNetworkShares(db, {
+    shares: planned.networkShares,
+    organizationId: ctx.auth.organizationId,
+    environmentId: ctx.environmentId,
+    projectId: planned.projectId,
+    resolved,
+    record: ctx.auth.hostingsOnly !== true,
+  })
+}
+
 async function resolveSuccessfulPlan(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
   organizationId: string,
-  hostAccess: HostAccessActor
+  hostAccess: HostAccessActor,
+  networkShares: NetworkSharesActor,
+  tracked: {
+    mode: DeployProjectOptionsMode
+    skipRead?: boolean
+    /** A rollback: the Base recorded on the deployment being rolled back to. */
+    atBase?: ComposeBaseRecord
+    selection?: DeploySourceSelection
+  }
 ): Promise<SuccessfulPlannedDeploy | Response> {
   const planned = await planEnvironmentDeploy(db, {
     environmentId,
     organizationId,
     hostAccess,
+    networkShares,
+    // A project that follows its repository's compose file deploys the file at
+    // the commit being deployed; the layers below it are unchanged.
+    resolveProjectOptions: (row) =>
+      resolveDeployProjectOptions(c, db, {
+        organizationId,
+        projectId: row.id,
+        projectOptions: row.options,
+        environmentId: row.environmentId,
+        environmentOptions: row.environmentOptions,
+        mode: tracked.mode,
+        ...(tracked.skipRead ? { skipRead: true } : {}),
+        ...(tracked.atBase ? { atBase: tracked.atBase } : {}),
+        ...(tracked.selection ? { selection: tracked.selection } : {}),
+      }),
   })
   if ('kind' in planned) {
     if (planned.kind === 'not_found') {
       return c.json({ error: 'Not found' }, 404)
+    }
+    if (planned.kind === 'tracked_base_failed') {
+      return responseForTrackedBaseError(c, planned.error)
     }
     // The merged document was refused before planning wrote anything. Answer
     // with the prepare-error body, so the diagnosis does not depend on which
@@ -2032,7 +2269,10 @@ async function prepareOneServerDeploy(
     serverId: params.serverId,
     organizationId: params.auth.organizationId,
     acknowledgeHealthCheckWarnings: params.auth.acknowledgeHealthCheckWarnings,
+    projectOptions: params.planned.projectOptions,
+    composeBase: params.planned.composeBase,
     composeValidated: params.planned.composeValidated,
+    ...(params.auth.hostingsOnly ? { hostingsOnly: true } : {}),
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,
     releaseIds: params.releaseIds,
@@ -2042,6 +2282,28 @@ async function prepareOneServerDeploy(
   if ('kind' in prepared) return responseForPrepareError(c, prepared)
 
   return { serverId: params.serverId, prepared }
+}
+
+/**
+ * Prepare every server, then judge the shares on what they resolved to. A
+ * refusal comes back as the response; otherwise the audit event (if any) rides
+ * along for {@link recordNetworkSharesUse}.
+ */
+async function prepareAndSettleServerDeploys(
+  c: Context<AppEnv>,
+  db: Db,
+  params: Parameters<typeof prepareAllServerDeploys>[2]
+): Promise<
+  { preparedByServer: PreparedServerDeploy[]; sharesUse?: NetworkSharesUseEvent } | Response
+> {
+  const preparedByServer = await prepareAllServerDeploys(c, db, params)
+  if (preparedByServer instanceof Response) return preparedByServer
+  const settled = await settlePreparedNetworkShares(db, params.planned, preparedByServer, {
+    auth: params.auth,
+    environmentId: params.environmentId,
+  })
+  if ('error' in settled) return responseForPrepareError(c, settled.error)
+  return { preparedByServer, sharesUse: settled.use }
 }
 
 async function prepareAllServerDeploys(
@@ -2285,6 +2547,40 @@ async function loadDeploySpanningContextOrRefuse(
   }
 }
 
+const ROLLBACK_BASE_UNRECORDED = {
+  error: 'rollback_base_unrecorded',
+  message:
+    'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead, or switch the project to seed mode to roll back.',
+}
+
+/** A hostings-only run builds nothing and keeps the stored Base. A rollback reads the Base recorded on the release it returns to, at that commit. */
+function deployReadOptions(auth: DeployRequestAuth): {
+  skipRead: boolean
+  atBase?: ComposeBaseRecord
+} {
+  const recorded = auth.rollback?.composeBase
+  return {
+    skipRead: auth.hostingsOnly === true || (auth.rollback !== undefined && !recorded),
+    ...(recorded ? { atBase: recorded } : {}),
+  }
+}
+
+/** Rolling back to a deployment that recorded no Base of a file the project now follows: the stored Base is the latest read, not that deployment's. */
+function rollbackBaseUnrecorded(auth: DeployRequestAuth, planned: PlannedDeploy): boolean {
+  return !!auth.rollback && !auth.rollback.composeBase && planned.composeBase !== null
+}
+
+/** Store the Base a deploy read, when it read one the project should follow. */
+async function storePlannedBase(db: Db, planned: PlannedDeploy): Promise<void> {
+  if (!planned.composeBaseRead) return
+  await storeTrackedBase(
+    db,
+    planned.projectId,
+    planned.composeBaseRead.document,
+    planned.composeBaseRead.record
+  )
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2304,9 +2600,18 @@ async function runEnvironmentDeploy(
       auth.organizationId,
       auth.hostingsOnly !== true,
       c.get('session')?.email ?? null
-    )
+    ),
+    await networkSharesActorForRequest(c, db, auth),
+    {
+      mode: 'deploy',
+      ...deployReadOptions(auth),
+      selection: auth.selection,
+    }
   )
   if (planned instanceof Response) return planned
+  if (rollbackBaseUnrecorded(auth, planned)) {
+    return c.json(ROLLBACK_BASE_UNRECORDED, 409)
+  }
 
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   let spanningCommitted = false
@@ -2339,15 +2644,17 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
     })
 
-    const preparedByServer = await prepareAllServerDeploys(c, db, {
+    const selection = selectionPinnedToTrackedBase(auth.selection, planned.composeBasePin)
+    const preparedAndSettled = await prepareAndSettleServerDeploys(c, db, {
       planned,
       environmentId,
       auth,
-      selection: auth.selection,
+      selection,
       dataEncryptionSecrets,
       ...spanningCtx,
     })
-    if (preparedByServer instanceof Response) return preparedByServer
+    if (preparedAndSettled instanceof Response) return preparedAndSettled
+    const { preparedByServer, sharesUse } = preparedAndSettled
 
     const previous = await listEnvironmentDeploymentTargets(db, environmentId)
     const { attachmentServers, participating, drainedIds } = deployParticipation({
@@ -2384,13 +2691,21 @@ async function runEnvironmentDeploy(
       engine,
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
-      selection: auth.selection,
+      allowNetworkShares: planned.allowNetworkShares,
+      selection,
+      composeBase: planned.composeBase,
       removedServices: removedServiceRows(planned.serviceRows, servicesMapping(planned.merged)),
     })
     if (persisted instanceof Response) return persisted
     const created = persisted
     spanningCommitted = true
+    // The deploy is accepted: only now does what it read become the stored Base.
+    await storePlannedBase(db, planned)
     await recordHostAccessUse(db, planned, auth, environmentId)
+    await recordNetworkSharesUse(db, sharesUse, auth, {
+      environmentId,
+      projectId: planned.projectId,
+    })
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
       environmentId,

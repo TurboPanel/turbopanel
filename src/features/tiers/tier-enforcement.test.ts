@@ -40,8 +40,6 @@ function resources(input: {
 
 function snapshotWithDrives(count: number): TopologySnapshot {
   return {
-    generation: 1,
-    bootGeneration: 1,
     networks: [],
     filesystems: [],
     blockDevices: Array.from({ length: count }, (_, index) => ({
@@ -63,8 +61,6 @@ function snapshotWithUplinks(
   nics: ReadonlyArray<{ deviceId: string; defaultRoute?: boolean }>
 ): TopologySnapshot {
   return {
-    generation: 1,
-    bootGeneration: 1,
     networks: nics.map((nic) => ({
       deviceId: nic.deviceId,
       kind: 'uplink' as const,

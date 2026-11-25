@@ -32,6 +32,7 @@ import {
   parseOrganizationDockerNetworking,
 } from '../deploy/docker-address-pools.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import { type BuildLimitSettings, parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import {
   DEFAULT_DIRECTORY_NAME_MODE,
   type DirectoryNameMode,
@@ -101,18 +102,9 @@ export type OrganizationOptions = {
    */
   managedDatabase?: ManagedOrganizationDefaults
   /**
-   * When on (the default — preferred for security), every newly created
-   * principal's applied login (Linux account / database role) is the short
-   * `username` plus a random `_<11 chars>` suffix. Off = applied login equals
-   * the short name. Decided per principal at create; toggling never renames
-   * existing principals. Managed root logins are always suffixed regardless.
-   */
-  randomizedPrincipalUsernames?: boolean
-  /**
    * Org default principal name scheme (`plain` | `partial` | `random`) for
-   * the system name (login on the host or engine). Wins over the legacy
-   * boolean above, which stays readable as a fallback (true = partial,
-   * false = plain). See `lib/principal-name-scheme.ts`.
+   * the system name (login on the host or engine). See
+   * `lib/principal-name-scheme.ts`.
    */
   principalNameScheme?: PrincipalNameScheme
   /**
@@ -191,6 +183,12 @@ export type OrganizationOptions = {
    * then the options parser drops hook fields and no deploy carries them.
    */
   deployHooksEnabled?: boolean
+  /**
+   * The most cores and memory any one build of this organization may use, on
+   * any server (per build, not a total). Part of the smallest-wins resolution
+   * in `../deploy/build-limits.ts`.
+   */
+  buildLimits?: BuildLimitSettings
   /**
    * Whether the new-project form opens its Environment section (the primary
    * environment name) without being asked. Off by default: most projects keep
@@ -386,9 +384,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }
   assignManagedDatabase(options, value)
-  if (typeof value.randomizedPrincipalUsernames === 'boolean') {
-    options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames
-  }
   if (isPrincipalNameScheme(value.principalNameScheme)) {
     options.principalNameScheme = value.principalNameScheme
   }
@@ -410,6 +405,8 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignProjectFormDefaults(options, value)
   assignComposeDefaultResourceLimits(options, value)
+  const buildLimits = parseBuildLimitSettings(value.buildLimits)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
   return options
@@ -457,11 +454,6 @@ export function resolveDirectoryNames(options: OrganizationOptions): {
 function assignPhpModes(options: { phpModes?: PhpMode[] }, value: Record<string, unknown>): void {
   const phpModes = parsePhpModes(value.phpModes)
   if (phpModes) options.phpModes = phpModes
-}
-
-/** Effective randomized-usernames default: on unless the org opted out. */
-export function resolveRandomizedPrincipalUsernames(options: OrganizationOptions): boolean {
-  return resolveOrgPrincipalNameScheme(options) !== 'plain'
 }
 
 /** Effective org default scheme and lock for new principals. */

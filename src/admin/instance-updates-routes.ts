@@ -57,15 +57,12 @@ import {
   nextUpgradeCheckAt,
   UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
 } from '../features/upgrades/schedule.ts'
-import {
-  parseUpgradeCheckMinutes,
-  UPGRADE_CHECK_MINUTES_ENV,
-} from '../features/upgrades/tick-cadence.ts'
+import { jobEveryMinutes } from '../jobs/registry.ts'
+import { loadJobCadences, resolveJobCadencesFromEnv } from '../features/settings/job-cadences.ts'
 import { UPGRADE_ACTIVE_STATUSES } from '../features/upgrades/vocabulary.ts'
 import {
   controlPlaneBackupPath,
   controlPlaneRollbackCommand,
-  updatesAutomaticBody,
 } from '../features/upgrades/decisions.ts'
 import type { UpdateManifestTarget } from '../features/update/manifest.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
@@ -74,21 +71,6 @@ const NO_DAEMON_ERROR = 'no co-located daemon connected to update the control pl
 
 /** Check Now pressed again within a minute (HTTP 429). */
 export const CHECK_TOO_SOON_ERROR = 'check_too_soon'
-
-/** The routes that used to start, retry or cancel an update by hand. */
-const RETIRED_UPDATE_ROUTES = [
-  '/instance/updates/instance',
-  '/instance/updates/daemon',
-  '/instance/updates/preflight',
-  '/instance/updates/runs',
-  '/instance/updates/steps/:id/retry',
-  '/instance/updates/runs/:id/cancel',
-] as const
-
-/** The answer every retired manual-update route gives. */
-function updatesAutomaticResponse(c: Context): Response {
-  return c.json(updatesAutomaticBody(), 410)
-}
 
 type ColocatedDaemon = {
   serverId: string | null
@@ -126,9 +108,8 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
 /**
  * Installed versions, channel targets, the read-only run and history API, the
  * batch size setting, Pause / Resume and Update Now. Updates start on their
- * own (the hourly check) or at once with Update Now; the routes that started,
- * retried or cancelled one by hand answer 410 `updates_automatic`. The
- * control-plane row is `INSTANCE_VERSION`.
+ * own (the hourly check) or at once with Update Now. The control-plane row is
+ * `INSTANCE_VERSION`.
  */
 export function registerInstanceUpdatesAdminRoutes(
   admin: Hono<AppEnv>,
@@ -241,10 +222,6 @@ export function registerInstanceUpdatesAdminRoutes(
     }
     return c.json(answer.body, answer.status)
   })
-
-  for (const path of RETIRED_UPDATE_ROUTES) {
-    admin.post(path, (c) => updatesAutomaticResponse(c))
-  }
 
   admin.post('/instance/updates/pause', async (c) => {
     const db = getDb(c)
@@ -534,7 +511,7 @@ type AutomaticStatus = {
   daemonsBehind: boolean
   nextCheckAt: string | null
   lastCheckAt: string | null
-  /** How often this install checks: 60, or less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set. */
+  /** How often this install checks: 60, or less where the `upgradeCheck` job cadence is set. */
   checkIntervalMinutes: number
   activeRunId: string | null
 }
@@ -563,7 +540,10 @@ async function readAutomaticStatus(
 ): Promise<AutomaticStatus> {
   const db = getDb(c)
   const env = resolvePlatformEnv(c, opts)
-  const checkIntervalMinutes = parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
+  // Workers read the var only; self-hosted also reads the `jobs.cadences` setting (cached).
+  const cadences =
+    db && opts.runtime === 'deno' ? await loadJobCadences(db, env) : resolveJobCadencesFromEnv(env)
+  const checkIntervalMinutes = jobEveryMinutes('upgradeCheck', cadences.table)
   const empty: AutomaticStatus = {
     automatic: true,
     ...pauseFields(null),

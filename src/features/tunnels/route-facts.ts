@@ -1,21 +1,25 @@
 /**
  * Loads the facts the route builder needs for one organization: for every
  * tunnel, which servers carry it and where each carried name's site runs, and
- * every server's datacenter addresses (exact addresses, the datacenter's
- * preferred family first).
+ * every server's peer-hop addresses (see `loadServerAddresses`).
  */
-import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, ne, or } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, deployment, doorway, hosting, ip, service, tls } from '../../db/schema.ts'
 import { resolveHostingProxy, type HostingOptions } from '../hostings/hosting-options.ts'
 import { compareText } from './order.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
-import type { DoorwayFact, TunnelFact } from './route-builder.ts'
+import {
+  unroutedReasons,
+  type DoorwayFact,
+  type ServerAddresses,
+  type TunnelFact,
+} from './route-builder.ts'
 
 export type RoutingFacts = {
   tunnels: TunnelFact[]
-  addresses: Map<string, string[]>
+  addresses: Map<string, ServerAddresses>
 }
 
 /** `10.0.0.1/32` and `fd00::1/128` as `10.0.0.1` and `fd00::1`; anything else unchanged. */
@@ -34,38 +38,64 @@ function orderAddresses(addresses: string[], preference: string): string[] {
   })
 }
 
+/**
+ * Each server's addresses for the peer hop: its datacenter network addresses
+ * by datacenter, and its dedicated public addresses (shared ones are never
+ * used). Which of them two servers use together is decided per pair by the
+ * route builder. A server with no address is absent.
+ */
 export async function loadServerAddresses(
   db: Db,
   organizationId: string,
   serverIds: readonly string[]
-): Promise<Map<string, string[]>> {
-  const book = new Map<string, string[]>()
+): Promise<Map<string, ServerAddresses>> {
+  const book = new Map<string, ServerAddresses>()
   if (serverIds.length === 0) return book
   const rows = await db
     .select({
       serverId: ip.serverId,
       address: ip.address,
+      scope: ip.scope,
+      datacenterId: ip.datacenterId,
       preference: datacenter.addressPreference,
     })
     .from(ip)
-    .innerJoin(datacenter, eq(datacenter.id, ip.datacenterId))
+    .leftJoin(datacenter, eq(datacenter.id, ip.datacenterId))
     .where(
       and(
         eq(ip.organizationId, organizationId),
-        eq(ip.scope, 'datacenter'),
         isNotNull(ip.serverId),
-        inArray(ip.serverId, [...serverIds])
+        inArray(ip.serverId, [...serverIds]),
+        or(eq(ip.scope, 'datacenter'), and(eq(ip.scope, 'public'), eq(ip.allocation, 'dedicated')))
       )
     )
-  const preferenceOf = new Map<string, string>()
-  const grouped = new Map<string, string[]>()
+  const datacenters = new Map<string, Map<string, { list: string[]; preference: string }>>()
+  const publics = new Map<string, string[]>()
   for (const r of rows) {
     if (!r.serverId) continue
-    preferenceOf.set(r.serverId, r.preference ?? 'ipv6')
-    grouped.set(r.serverId, [...(grouped.get(r.serverId) ?? []), bareAddress(String(r.address))])
+    const address = bareAddress(String(r.address))
+    if (r.scope === 'public') {
+      publics.set(r.serverId, [...(publics.get(r.serverId) ?? []), address])
+      continue
+    }
+    if (!r.datacenterId) continue
+    const byId = datacenters.get(r.serverId) ?? new Map()
+    const entry = byId.get(r.datacenterId) ?? { list: [], preference: r.preference ?? 'ipv6' }
+    entry.list.push(address)
+    byId.set(r.datacenterId, entry)
+    datacenters.set(r.serverId, byId)
   }
-  for (const [serverId, list] of grouped) {
-    book.set(serverId, orderAddresses(list, preferenceOf.get(serverId) ?? 'ipv6'))
+  for (const serverId of new Set([...datacenters.keys(), ...publics.keys()])) {
+    const perDatacenter: Record<string, string[]> = {}
+    const byId = datacenters.get(serverId) ?? new Map()
+    for (const id of [...byId.keys()].toSorted(compareText)) {
+      const entry = byId.get(id)
+      if (entry) perDatacenter[id] = orderAddresses(entry.list, entry.preference)
+    }
+    book.set(serverId, {
+      datacenters: perDatacenter,
+      public: orderAddresses(publics.get(serverId) ?? [], 'ipv4'),
+    })
   }
   return book
 }
@@ -132,6 +162,21 @@ export async function loadRoutingFacts(db: Db, organizationId: string): Promise<
     t.doorways.forEach((d) => d.siteServerIds.forEach((id) => involved.add(id)))
   }
   return { tunnels, addresses: await loadServerAddresses(db, organizationId, [...involved]) }
+}
+
+/**
+ * Why a name of the tunnel is not forwarded, by hostname: a name some carrying
+ * server could not route (the site runs nowhere, or no server that runs it has
+ * an address). Names routed everywhere have no entry.
+ */
+export async function loadUnroutedReasons(
+  db: Db,
+  organizationId: string,
+  tunnelRow: Parameters<typeof carryingServers>[1]
+): Promise<Map<string, string>> {
+  const facts = await loadRoutingFacts(db, organizationId)
+  const carriers = await carryingServers(db, tunnelRow)
+  return unroutedReasons(carriers, facts.tunnels, facts.addresses)
 }
 
 /** The servers that run a site with one of the tunnel's names (its non-removing doorways), sorted. */

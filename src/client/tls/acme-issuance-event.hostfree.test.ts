@@ -4,7 +4,11 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { applyIssuanceOutcome, handleAcmeIssuanceEvent } from './acme-issuance-event.ts'
+import {
+  applyIssuanceOutcome,
+  FAILURE_ALERT_INTERVAL_MS,
+  handleAcmeIssuanceEvent,
+} from './acme-issuance-event.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -24,16 +28,19 @@ const SERVER_ID = '00000000-0000-4000-8000-0000000000aa'
 const ORG_ID = '00000000-0000-4000-8000-0000000000bb'
 
 /**
- * Two selects in order: the reporting server's organization (scoping the
- * write), then that organization's lets_encrypt rows. `organizationId: null`
+ * Selects in order: the reporting server's organization (scoping the
+ * write), that organization's lets_encrypt rows, then the two pin lookups for
+ * the reporting server (`pinned` lists the row ids a hosting on it pins;
+ * default: all). `organizationId: null`
  * stands in for a server that is enrolled but not yet placed in one.
  */
 function fakeDb(
   rows: Row[],
-  opts: { organizationId?: string | null } = {}
+  opts: { organizationId?: string | null; pinned?: string[] } = {}
 ): { db: Db; updates: Array<{ id: string; patch: Record<string, unknown> }> } {
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = []
   const organizationId = opts.organizationId === undefined ? ORG_ID : opts.organizationId
+  const pinned = opts.pinned ?? rows.map((r) => r.id)
   const managedIds = rows.filter((r) => r.status === 'automatic').map((r) => r.id)
   let updateIndex = 0
   let selectCall = 0
@@ -52,7 +59,14 @@ function fakeDb(
             where: () => ({ limit: () => Promise.resolve(serverRows) }),
           }
         }
-        return { where: () => Promise.resolve(rows) }
+        if (selectCall === 2) return { where: () => Promise.resolve(rows) }
+        // The two pin lookups (`rowsPinnedOnServer`): a hosting pin, then a hostname pin.
+        const pinRows = selectCall === 3 ? pinned.map((tlsId) => ({ tlsId })) : []
+        const chain: Record<string, unknown> = {
+          innerJoin: () => chain,
+          where: () => Promise.resolve(pinRows),
+        }
+        return chain
       },
     }),
     update: () => ({
@@ -165,6 +179,57 @@ test('handleAcmeIssuanceEvent writes lastError onto the matching managed row, le
   // Sibling acme fields survive the merge-patch untouched.
   assertEquals(metadata.acme?.managedBy, 'caddy')
   assertEquals(metadata.acme?.challengeType, 'http-01')
+})
+
+test('a failed HTTPS check with no address record does not mark a DNS-01 wildcard order failed', async () => {
+  const { db, updates } = fakeDb([
+    {
+      id: 'tls-1',
+      status: 'automatic',
+      metadata: {
+        dnsNames: ['*.app.example.net', 'app.example.net'],
+        hasWildcard: true,
+        notBefore: '',
+        subject: '',
+        issuer: '',
+        acme: { challengeType: 'dns-01', managedBy: 'server', stage: 'ordering' },
+      },
+    },
+  ])
+  const result = await handleAcmeIssuanceEvent(db, {
+    serverId: SERVER_ID,
+    hostname: 'app.example.net',
+    ok: false,
+    errorMessage:
+      'fetch failed: error sending request for url (https://app.example.net/): dns error: failed to lookup address information: Name or service not known',
+  })
+  assertEquals(result.updated, false)
+  assertEquals(updates.length, 0)
+})
+
+test('a good HTTPS check still lands on a DNS-01 order row', async () => {
+  const { db, updates } = fakeDb([
+    {
+      id: 'tls-1',
+      status: 'automatic',
+      metadata: {
+        dnsNames: ['*.app.example.net', 'app.example.net'],
+        hasWildcard: true,
+        notBefore: '',
+        subject: '',
+        issuer: '',
+        acme: { challengeType: 'dns-01', managedBy: 'server', stage: 'ordering' },
+      },
+    },
+  ])
+  const result = await handleAcmeIssuanceEvent(db, {
+    serverId: SERVER_ID,
+    hostname: 'app.example.net',
+    ok: true,
+    notAfter: '2027-02-21T00:00:00.000Z',
+  })
+  assertEquals(result.updated, true)
+  assertEquals(updates.length, 1)
 })
 
 test('handleAcmeIssuanceEvent falls back to a default message when the daemon sent none', async () => {
@@ -579,4 +644,66 @@ test('several rows covering one hostname announce once', async () => {
     { onNewFailure: () => Promise.resolve(void calls++) }
   )
   assertEquals(calls, 1)
+})
+
+test('an event from a server that does not pin the row changes nothing and announces nothing', async () => {
+  const { db, updates } = fakeDb(
+    [{ id: 'row-other-server', status: 'automatic', metadata: { dnsNames: ['app.example.com'] } }],
+    { pinned: [] }
+  )
+  const announced: unknown[] = []
+  const result = await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+    { onNewFailure: (failure) => Promise.resolve(void announced.push(failure)) }
+  )
+  assertEquals(result.updated, false)
+  assertEquals(updates.length, 0)
+  assertEquals(announced.length, 0)
+})
+
+test('an event from the pinning server still updates and announces', async () => {
+  const { db, updates } = fakeDb(
+    [
+      { id: 'row-mine', status: 'automatic', metadata: { dnsNames: ['app.example.com'] } },
+      { id: 'row-theirs', status: 'automatic', metadata: { dnsNames: ['app.example.com'] } },
+    ],
+    { pinned: ['row-mine'] }
+  )
+  const announced: unknown[] = []
+  const result = await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+    { onNewFailure: (failure) => Promise.resolve(void announced.push(failure)) }
+  )
+  assertEquals(result.updated, true)
+  assertEquals(updates.length, 1)
+  assertEquals(announced.length, 1)
+})
+
+test('a failure that recovered and fails again inside the interval is not announced twice', async () => {
+  const recent = new Date(Date.now() - 60_000).toISOString()
+  const old = new Date(Date.now() - 2 * FAILURE_ALERT_INTERVAL_MS).toISOString()
+  const run = async (lastFailedAt: string | undefined): Promise<number> => {
+    const { db } = fakeDb([
+      {
+        id: 'row',
+        status: 'automatic',
+        metadata: {
+          dnsNames: ['app.example.com'],
+          acme: { lastIssuedAt: recent, ...(lastFailedAt ? { lastFailedAt } : {}) },
+        },
+      },
+    ])
+    let count = 0
+    await handleAcmeIssuanceEvent(
+      db,
+      { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+      { onNewFailure: () => Promise.resolve(void count++) }
+    )
+    return count
+  }
+  assertEquals(await run(undefined), 1)
+  assertEquals(await run(recent), 0)
+  assertEquals(await run(old), 1)
 })

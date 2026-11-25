@@ -9,14 +9,14 @@ import {
 } from '../features/install/instance-secret-sealing.ts'
 import { decryptSecretForDaemon, encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../lib/secrets/secrets.ts'
-import {
-  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
-  SEALED_INSTANCE_SECRETS_FEATURE,
-} from '../lib/version-wire.ts'
+import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { setSelfHostedAddress } from '../features/install/ingress-modes.ts'
-import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
+import {
+  PublicUrlsApplyPayloadError,
+  resolvePublicUrlsApplyPayload,
+} from './public-urls-apply-payload.ts'
 import { waitForPublicUrlsApply } from './routes-helpers.ts'
 
 /**
@@ -142,14 +142,7 @@ test('an uploaded key reaches the Redis outbox only as a tpdaemon envelope', asy
       features: [SEALED_INSTANCE_SECRETS_FEATURE],
     })
     const sealing = await resolveInstanceSecretSealing(tx, serverId, secretsConfig)
-    const payload = await resolvePublicUrlsApplyPayload(
-      tx,
-      [host],
-      '0.1.1',
-      await dataEncryption(),
-      {},
-      sealing
-    )
+    const payload = await resolvePublicUrlsApplyPayload(tx, await dataEncryption(), {}, sealing)
     const { registry, outboxWrites } = recordingRedisRegistry(serverId)
 
     await waitForPublicUrlsApply(registry, serverId, payload)
@@ -169,24 +162,19 @@ test('an uploaded key reaches the Redis outbox only as a tpdaemon envelope', asy
   })
 })
 
-test('a daemon without the feature still receives the legacy plaintext key', async () => {
+test('a daemon without the feature gets no uploaded key, never plaintext', async () => {
   await withRollback(async (tx) => {
-    const host = await seedUploadedHostname(tx)
-    const payload = await resolvePublicUrlsApplyPayload(
-      tx,
-      [host],
-      '0.1.1',
-      await dataEncryption(),
-      {},
-      null
+    await seedUploadedHostname(tx)
+    const secrets = await dataEncryption()
+    await assertRejects(
+      () => resolvePublicUrlsApplyPayload(tx, secrets, {}, null),
+      PublicUrlsApplyPayloadError,
+      'does not open sealed instance secrets'
     )
-    const entry = payload.hostnames?.find((candidate) => candidate.host === host)
-    assertEquals(entry?.keyPem, UPLOADED_KEY)
-    assertEquals(entry?.keyEnvelope, undefined)
   })
 })
 
-test('only tunnel hostnames carry the public port, and only for a daemon that lists the feature', async () => {
+test('only tunnel hostnames carry the public port', async () => {
   await withRollback(async (tx) => {
     const id = crypto.randomUUID()
     const direct = `direct-${id}.example.test`
@@ -195,20 +183,13 @@ test('only tunnel hostnames carry the public port, and only for a daemon that li
       { host: direct, source: 'platform-ca', publicPort: 8443 },
       { host: tunnel, source: 'platform-ca', publicPort: 443, mode: 'cloudflare-tunnel' },
     ])
-    const build = (features: string[]) =>
-      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null, {
-        daemonFeatures: features,
-      })
+    const build = () => resolvePublicUrlsApplyPayload(tx, undefined, {}, null)
     const entryFor = (
       payload: Awaited<ReturnType<typeof build>>,
       host: string
     ): Record<string, unknown> => payload.hostnames?.find((entry) => entry.host === host) ?? {}
 
-    const legacy = await build([SEALED_INSTANCE_SECRETS_FEATURE])
-    assertEquals(entryFor(legacy, tunnel).source, 'platform-ca')
-    assertEquals('publicPort' in entryFor(legacy, tunnel), false)
-
-    const capable = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+    const capable = await build()
     assertEquals(entryFor(capable, tunnel).publicPort, 443)
     // A direct name never redirects: ports 80 and 443 there belong to hosting.
     assertEquals('publicPort' in entryFor(capable, direct), false)
@@ -216,7 +197,7 @@ test('only tunnel hostnames carry the public port, and only for a daemon that li
     // Self-hosted, the daemon is always sent 8443 whatever the row stored.
     setSelfHostedAddress(true)
     try {
-      const fixed = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+      const fixed = await build()
       assertEquals(entryFor(fixed, tunnel).publicPort, 8443)
       assertEquals('publicPort' in entryFor(fixed, direct), false)
     } finally {
@@ -248,8 +229,10 @@ test('a DNS-01 name reaches the daemon as uploaded while its pair is live, else 
       { host: waiting, source: 'acme-dns-01' },
     ])
     const secrets = await dataEncryption()
+    const { serverId } = await seedDaemon(tx, { features: [SEALED_INSTANCE_SECRETS_FEATURE] })
+    const sealing = await resolveInstanceSecretSealing(tx, serverId, parseTestSecretsConfig())
     const build = (at: number) =>
-      resolvePublicUrlsApplyPayload(tx, [issued, waiting], '0.1.1', secrets, {}, null, { now: at })
+      resolvePublicUrlsApplyPayload(tx, secrets, {}, sealing, { now: at })
     const sourceOf = (payload: Awaited<ReturnType<typeof build>>, host: string) =>
       payload.hostnames?.find((entry) => entry.host === host)?.source
 

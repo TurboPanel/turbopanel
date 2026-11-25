@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from '@std/assert'
+import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { mariadbEngineSpec } from './mariadb.ts'
@@ -28,6 +28,7 @@ import {
   resolveManagedUserPrivileges,
   serializeContainerRow,
   serializeManagedLogin,
+  engineLoginNameForPrincipal,
   evaluateExistingPrincipalLoginName,
   evaluateManagedLoginDropGuard,
   evaluateManagedLoginRotateGuard,
@@ -461,15 +462,15 @@ test('serializeManagedLogin keeps the users shape, names the principal and login
 test('evaluateExistingPrincipalLoginName accepts a name the engine takes and refuses the rest', () => {
   assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'alice'), null)
   assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site_owner_01'), null)
-  // A Linux name may carry a hyphen no engine role name takes, and MySQL
-  // role names stop at 32 characters: the login is refused, never renamed.
+  // A hyphen no longer refuses the login: the engine name is mapped.
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site-owner'), null)
   assertEquals(
-    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site-owner')?.error,
-    'principal_name_does_not_fit'
+    evaluateExistingPrincipalLoginName(mariadbEngineSpec, 'utptest-inv_4ui81886gzx'),
+    null
   )
-  const long = 'a'.repeat(mysqlEngineSpec.userOperations.identifier.maxLength + 1)
+  // A name with nothing to map and no room left is still refused.
   assertEquals(
-    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.error,
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, '9starts-with-digit')?.error,
     'principal_name_does_not_fit'
   )
   assertEquals(
@@ -481,9 +482,57 @@ test('evaluateExistingPrincipalLoginName accepts a name the engine takes and ref
     'principal_name_reserved'
   )
   assertStringIncludes(
-    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.message ?? '',
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, '9x-y')?.message ?? '',
     'Create a login with a new name instead'
   )
+})
+
+const MAX_PRINCIPAL_NAMES = [
+  // Longest Linux user names (28 characters), with hyphens, underscores or both.
+  'a-'.repeat(14),
+  'utptest-invdir-x_p9ajkd28m39',
+  'abcdefghijklmnopqrstuvwx-yz',
+  'a_'.repeat(14),
+  'x'.repeat(28),
+  '_leading-hyphen_name_0123456',
+]
+
+test('engineLoginNameForPrincipal maps the reported name to a valid engine name', () => {
+  for (const spec of [mariadbEngineSpec, mysqlEngineSpec, postgresEngineSpec]) {
+    const { pattern, maxLength } = spec.userOperations.identifier
+    const mapped = engineLoginNameForPrincipal(spec, 'utptest-inv_4ui81886gzx')
+    assert(mapped !== null && mapped !== 'utptest-inv_4ui81886gzx')
+    assert(pattern.test(mapped) && mapped.length <= maxLength)
+    assert(mapped.startsWith('utptest_inv_4ui81886gzx_'))
+    // Deterministic: same input, same output.
+    assertEquals(engineLoginNameForPrincipal(spec, 'utptest-inv_4ui81886gzx'), mapped)
+  }
+})
+
+test('engineLoginNameForPrincipal keeps a name the engine takes and fits every maximum-length name', () => {
+  assertEquals(engineLoginNameForPrincipal(mariadbEngineSpec, 'site_owner_01'), 'site_owner_01')
+  assertEquals(engineLoginNameForPrincipal(mariadbEngineSpec, 'x'.repeat(28)), 'x'.repeat(28))
+  for (const spec of [mariadbEngineSpec, mysqlEngineSpec, postgresEngineSpec]) {
+    const { pattern, maxLength } = spec.userOperations.identifier
+    for (const name of MAX_PRINCIPAL_NAMES) {
+      assertEquals(name.length <= 28, true)
+      const mapped = engineLoginNameForPrincipal(spec, name)
+      assert(mapped !== null, name)
+      assert(pattern.test(mapped) && mapped.length <= maxLength, `${name} -> ${mapped}`)
+    }
+  }
+  // A name at the engine's own length limit still gets a name that fits.
+  const tight = mysqlEngineSpec.userOperations.identifier.maxLength
+  const long = `a-${'b'.repeat(tight)}`
+  const mapped = engineLoginNameForPrincipal(mysqlEngineSpec, long)
+  assertEquals(mapped?.length, tight)
+})
+
+test('engineLoginNameForPrincipal keeps hyphen and underscore twins apart', () => {
+  const names = ['my-site', 'my_site', 'my-site_', 'my_site-', 'my--site']
+  const mapped = names.map((name) => engineLoginNameForPrincipal(mariadbEngineSpec, name))
+  assertEquals(mapped[1], 'my_site')
+  assertEquals(new Set(mapped).size, names.length)
 })
 
 test('serializeManagedLogin reads settings from the login columns', () => {

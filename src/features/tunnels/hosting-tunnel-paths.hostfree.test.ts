@@ -32,7 +32,7 @@ test('matchHostingTunnelPaths: a linked doorway belongs to its hosting, an unlin
       door({}),
       door({ hostname: 'api.example.com', hostingId: null }),
     ],
-    new Set()
+    new Map()
   )
   assertEquals(
     paths.get(SITE)?.map((p) => [p.hostname, p.tunnelOnly, p.originVerified]),
@@ -48,16 +48,16 @@ test('matchHostingTunnelPaths: a doorway linked to another hosting is not taken 
   const paths = matchHostingTunnelPaths(
     [{ id: OTHER, hostnames: ['shop.example.com'] }],
     [door({})],
-    new Set()
+    new Map()
   )
   assertEquals(paths.size, 0)
 })
 
-test('matchHostingTunnelPaths: originVerified follows the tunnel whose verified connection is in effect', () => {
+test('matchHostingTunnelPaths: originVerified follows the names in the verified set of the tunnel', () => {
   const paths = matchHostingTunnelPaths(
     [{ id: SITE, hostnames: ['shop.example.com'] }],
     [door({})],
-    new Set([TUNNEL])
+    new Map([[TUNNEL, new Set(['shop.example.com'])]])
   )
   assertEquals(paths.get(SITE)?.[0]?.originVerified, true)
 })

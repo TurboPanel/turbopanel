@@ -3,8 +3,13 @@ import {
   connectorsNeedingRepair,
   connectorUpdateNotice,
   nextTunnelStatus,
+  peerDowngradeRepeats,
+  peerHopStatusOf,
+  peerLeafRemintDue,
   portalErrorOf,
   portalStateOf,
+  toApiPeerHop,
+  toApiStatusPorts,
 } from './status.ts'
 
 /**
@@ -100,6 +105,7 @@ test('an all-servers tunnel has no portal rows, so one server going down only mo
 test('only asked connectors that are not running need a repair', () => {
   const other = '1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e'
   const third = '2c3d4e5f-6a7b-4c8d-8e9f-1a2b3c4d5e6f'
+  const fourth = '3d4e5f6a-7b8c-4d9e-9fa0-2b3c4d5e6f70'
   const result = {
     pinnedVersion: '2026.5.2',
     connectors: [
@@ -107,18 +113,83 @@ test('only asked connectors that are not running need a repair', () => {
       { ...base, tunnelId: other, status: 'connected' as const },
       { ...base, tunnelId: third, status: 'failed' as const },
       { ...base, tunnelId: 'instance', status: 'stopped' as const },
+      { ...base, tunnelId: fourth, status: 'not-installed' as const },
     ],
   }
   // The control plane's own tunnel and ids it never asked for are not its to repair.
   assertEquals(connectorsNeedingRepair(result, [base.tunnelId, other]), [base.tunnelId])
   assertEquals(connectorsNeedingRepair(result, [third, base.tunnelId]), [base.tunnelId, third])
+  assertEquals(connectorsNeedingRepair(result, [fourth, other]), [fourth])
   assertEquals(connectorsNeedingRepair(result, [other]), [])
   assertEquals(connectorsNeedingRepair(result, []), [])
-  // Running, starting, or gone (a resend would not reinstall it): nothing to repair.
-  for (const status of ['connecting', 'connected', 'not-installed'] as const) {
+  // Running or starting: nothing to repair.
+  for (const status of ['connecting', 'connected'] as const) {
     assertEquals(
       connectorsNeedingRepair({ ...result, connectors: [{ ...base, status }] }, [base.tunnelId]),
       []
     )
   }
+})
+
+test('the reported peer hop mode is read back from server metadata, and a downgrade shows', () => {
+  assertEquals(peerHopStatusOf(null), null)
+  assertEquals(peerHopStatusOf({}), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'x' } }), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'require' } }), {
+    clientAuth: 'require',
+    downgraded: false,
+  })
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'verify', downgraded: true } }), {
+    clientAuth: 'verify',
+    downgraded: true,
+  })
+})
+
+test('a downgrade asks for one new peer leaf per report, and a repeat is only logged', () => {
+  const hop = (extra: object) => ({ tunnelPeerHop: { clientAuth: 'verify', ...extra } })
+  assertEquals(peerLeafRemintDue(null), false)
+  assertEquals(peerLeafRemintDue(hop({ downgraded: false })), false)
+  assertEquals(peerLeafRemintDue(hop({ downgraded: true })), true)
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: true })), false)
+  // After the re-mint was marked, the same report asks for nothing more.
+  assertEquals(peerLeafRemintDue(hop({ downgraded: true, reminted: true })), false)
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: true, reminted: true })), true)
+  // A mode that is no longer downgraded is neither.
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: false, reminted: true })), false)
+})
+
+test('the API shows the peer hop as a mode, a downgrade flag and the report time', () => {
+  const none = { mode: 'none' as const, downgraded: false, reportedAt: null }
+  assertEquals(toApiPeerHop(null), none)
+  assertEquals(toApiPeerHop({ tunnelPeerHop: { clientAuth: 'bad' } }), none)
+  assertEquals(
+    toApiPeerHop({
+      tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt: '2026-11-17T10:00:00Z' },
+    }),
+    { mode: 'verify', downgraded: true, reportedAt: '2026-11-17T10:00:00Z' }
+  )
+  // A report stored before the time was kept has no time.
+  assertEquals(toApiPeerHop({ tunnelPeerHop: { clientAuth: 'require' } }), {
+    mode: 'require',
+    downgraded: false,
+    reportedAt: null,
+  })
+})
+
+test('a missing lock report reads as unknown, never as locked', () => {
+  const unknown = { locked: null, reason: null, checkedAt: null }
+  assertEquals(toApiStatusPorts(null), unknown)
+  assertEquals(toApiStatusPorts({}), unknown)
+  assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: 'yes' } }), unknown)
+  assertEquals(
+    toApiStatusPorts({
+      tunnelStatusPorts: { locked: true, checkedAt: '2026-11-19T10:00:00.000Z' },
+    }),
+    { locked: true, reason: null, checkedAt: '2026-11-19T10:00:00.000Z' }
+  )
+  assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: false, reason: 'nft failed' } }), {
+    locked: false,
+    reason: 'nft failed',
+    checkedAt: null,
+  })
 })

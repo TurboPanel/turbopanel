@@ -27,18 +27,25 @@ import { refreshEdgeRanges, runEdgeTrustTick } from './ingress/edge-ranges.ts'
 import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { noticeDisconnectedServers } from '../../daemon/cell/disconnect-notice.ts'
-import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
+import { loadCronGates } from '../../daemon/cell/cron-gates.ts'
+import {
+  endOfflineSweep,
+  renewOfflineSweep,
+  tryBeginOfflineSweep,
+} from '../../daemon/cell/offline-sweep-lease.ts'
+import { prunePeaks } from '../../features/servers/peak.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
+import { loadJobCadences } from '../../features/settings/job-cadences.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
-import { DAEMON_CELL_MAINTAIN_MS, DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
+import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -73,10 +80,7 @@ import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
-import {
-  LEAF_RENEWAL_SWEEP_INTERVAL_MS,
-  runLeafRenewalSweepTick,
-} from '../../client/tls/leaf-renewal-sweep.ts'
+import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
 import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
@@ -91,7 +95,14 @@ import {
   type PlatformAdminRoutesRegistrar,
   withDevelopmentAdminRoutes,
 } from './development-admin-routes.ts'
-import { startIngressTimer } from './ingress/tick.ts'
+import { createIngressTick } from './ingress/tick.ts'
+import {
+  createJobTick,
+  type DenoJobHandlers,
+  JOB_TICK_MS,
+  type TickContext,
+  tickJobsFromTable,
+} from './job-tick.ts'
 import { runSelfHostedTunnelSweeps } from './tunnel-sweeps.ts'
 import { peerLeafDelivery } from '../../features/tunnels/sync.ts'
 import { hostnameModes } from './ingress/planner.ts'
@@ -110,12 +121,15 @@ import {
   resolvePanelIdentityFromDb,
 } from '../../lib/panel-identity/identity.ts'
 import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
-import { recordAudit } from '../../features/audit/audit-records.ts'
+import { closeAbandonedTerminalOpens, recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
 import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
 import { createPublicTlsProbe } from './public-tls-probe.ts'
 import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { ShellHub, withShellHub } from '../../daemon/shell-hub.ts'
+import { terminalRevocation } from '../../client/terminal/revocation.ts'
+import { confirmOnNameservers } from './dns-confirm.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
@@ -151,6 +165,7 @@ import {
 import { createDurableAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from '../../client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from '../../client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from '../../features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -169,8 +184,8 @@ import {
   probeCommandAmqpBrokerReachable,
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
-import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
-import { createAmqpMailDeadLetterStore } from '../../lib/email/mailer/deno-mail-dead-letters.ts'
+import { startMailerConsumer } from '../../features/email/mailer/deno-mailer-consumer.ts'
+import { createAmqpMailDeadLetterStore } from '../../features/email/mailer/deno-mail-dead-letters.ts'
 import {
   createNoopCommandQueue,
   isNoopCommandQueue,
@@ -207,9 +222,6 @@ import {
   recoveryIdFromCommandMetadata,
   sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
-
-/** How often the advised heartbeat is re-read from the hostname rows. */
-const HEARTBEAT_REFRESH_MS = 5 * 60 * 1000
 
 export type DenoDeveloperSurfaceContext = {
   routes: Hono<AppEnv>
@@ -386,12 +398,7 @@ function resolveCommandAmqpUrl(): string | null {
   return DEFAULT_AMQP_URL
 }
 
-/** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
-const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
-let lastCommandPruneMs = 0
-let lastEdgeTrustTickMs = 0
-const EDGE_TRUST_TICK_INTERVAL_MS = 5 * 60_000
-
+/** Isolate one phase of a job so a failure cannot abort the rest of that job. */
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn()
@@ -491,6 +498,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     WEBAUTHN_CHALLENGE_PURPOSE
   )
+  const shellTicketSecrets = await deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE)
   const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   const challengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -528,7 +536,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     from: emailSettings.from,
     consoleBaseUrl: await resolveSelfHostedConsoleBaseUrl(db).catch(() => null),
   })
-  const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
+  // Terminals live in this process: the hub holds the pending opens and relays the frames.
+  const shellHub = new ShellHub({ db })
+  const daemonCellRegistry = withShellHub(createRedisDaemonCellRegistry({ db }), shellHub)
   const queryCache = createRedisQueryCache({
     client: daemonCellRegistry.client,
     db,
@@ -676,6 +686,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     twoFactorChallengeSecrets,
     backupCodeVerifierSecrets,
     webauthnChallengeSecrets,
+    shellTicketSecrets,
     runtime: 'deno',
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
@@ -770,7 +781,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secrets: daemonJwtKeyring,
     sessionSecrets,
     dataEncryptionSecrets,
+    confirmDnsRecord: confirmOnNameservers,
     daemonCellRegistry,
+    shellHub,
+    shellTicketSecrets,
+    corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
@@ -811,322 +826,347 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const socketPath = resolveInstanceSocket()
 
   const abort = new AbortController()
-  const runSystemReconcileSweepTick = (): void => {
-    if (isNoopCommandQueue(commandQueue)) return
-    // A lost database host (`daemon/cell/host-loss-tick.ts`): never throws.
-    void runHostLossTick(db, {
-      commandQueue,
-      registry: daemonCellRegistry,
-      env: Deno.env.toObject(),
-    })
-    void runSystemReconcileSweep(db, commandQueue).catch((err) => {
-      logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
-    })
-    // Orphaned-frontend teardown rides the same tick; separate call because
-    // it enqueues `managed.ingress.reconcile` (needs secrets for payload
-    // sealing), which `system.reconcile` cannot express.
-    void runManagedIngressOrphanSweep(db, commandQueue, {
-      secretsConfig,
-      dataEncryptionSecrets,
-    }).catch((err) => {
-      logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
-    })
-    // An external-access change that never reached its server (a payload that
-    // could not be built, or a server offline past the command's validity) is
-    // pushed again here until the server confirms it.
-    void runManagedExternalAccessPendingSweep(db, commandQueue, {
-      secretsConfig,
-      dataEncryptionSecrets,
-    }).catch((err) => {
-      logWarn('daemon-cell', `managed external access pending sweep error: ${String(err)}`)
-    })
-    // Automatic membership repins stamp `ip.repin_pending_fanout_at`
-    // from the presence path (which must not enqueue); this drains them with
-    // the datacenter routing fan-out. Isolated so a failure never affects the
-    // other sweeps.
-    void runDatacenterRepinFanoutSweep(db, commandQueue, {
-      secretsConfig,
-      dataEncryptionSecrets,
-    }).catch((err) => {
-      logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
-    })
-    // Automatic network fallback: probe the network that carries
-    // server-to-server traffic and mark servers nobody can reach. Throttled
-    // inside, so extra ticks (every reconnect) cost nothing.
-    void runNetworkProbeSweep(db, daemonCellRegistry).catch((err) => {
-      logWarn('daemon-cell', `network probe sweep error: ${String(err)}`)
-    })
-    // Backup policy sets once after each reconnect (hello must not enqueue).
-    void runBackupsReconcileSweep(db, commandQueue, {
-      copyDeps:
-        secretsConfig && dataEncryptionSecrets
-          ? { secretsConfig, dataEncryptionSecrets }
-          : undefined,
-    }).catch((err) => {
-      logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
-    })
-    // Folders of deleted assets whose host has not confirmed them gone: asked
-    // again once the server is connected, and every few minutes while stuck.
-    void runFolderRemovalSweep(db, commandQueue).catch((err) => {
-      logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
-    })
-    // Hosting Accounts of deleted projects, removed once their folders are gone
-    // and every server they are on is connected.
-    void runPrincipalRemovalSweep(db, commandQueue, secretsConfig).catch((err) => {
-      logWarn('daemon-cell', `principal removal sweep error: ${String(err)}`)
-    })
-    // A fresh folder listing from servers that have folders, every few hours.
-    void runFolderReconcileSweep(db, commandQueue, secretsConfig).catch((err) => {
-      logWarn('daemon-cell', `folder reconcile sweep error: ${String(err)}`)
-    })
-    // Firewall previews once after each reconnect. Applies only for a server
-    // both keys of features/firewall/enforcement.ts allow, and never re-applies
-    // an unchanged ruleset.
-    void runFirewallPreviewSweep(db, commandQueue, {
-      applyGate: firewallApplyGateFromEnv(Deno.env.toObject()),
-    }).catch((err) => {
-      logWarn('daemon-cell', `firewall preview sweep error: ${String(err)}`)
-    })
-  }
-  // Observe pending self-host inventory on boot, not only after the first
-  // 60s cell tick. Hello/DO still must not enqueue; this is the Deno timer path.
-  runSystemReconcileSweepTick()
-  // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
-  // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
-  // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
-  // DO stale-sweep alarm) — see DaemonCellObject alarm-path comments in do.ts.
-  // Liveness and cleanup use separate in-flight flags so a hung dispatch /
-  // webhook / execution-log / reconcile sweep cannot suppress stale-presence.
-  const maintenance = createDenoMaintenanceScheduler({
-    async runLiveness() {
-      try {
-        await daemonCellRegistry.maintain()
-      } catch (err) {
-        logWarn('daemon-cell', `maintenance error: ${String(err)}`)
-      }
-      const resolveSender = () =>
-        resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, consoleEmail)
-      try {
+  const noopQueue = isNoopCommandQueue(commandQueue)
+  const resolveSender = () =>
+    resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, consoleEmail)
+  const ingressTick = createIngressTick({
+    dataEncryption: dataEncryptionSecrets,
+    secretsConfig,
+    registry: daemonCellRegistry,
+    env: runtimeEnv,
+    selfKid: () => panelIdentity.current.kid,
+    commandQueue,
+    email: consoleEmail,
+  })
+  // The same job table the hosted cron reads (`jobs/table.ts`: one row per job
+  // with its gates and cadence), on one 60 second tick. This is the adapter: each
+  // handler below does the work with this process's connections. One console
+  // link per tick, read the first time a mail sweep needs it.
+  let tickEmail: Promise<EmitEmail> | null = null
+  const email = () => (tickEmail ??= consoleEmail())
+  const certificateDb = (ctx: TickContext): Db =>
+    ctx.resource('certificate-db', createDenoDb, (tickDb) => endDbConnection(tickDb))
+  const handlers: DenoJobHandlers = {
+    // Local: this process's own state, on every instance.
+    'cell-maintain': { scope: 'local', run: () => daemonCellRegistry.maintain() },
+    'terminal-reap': { scope: 'local', run: () => Promise.resolve(shellHub.reap()) },
+    'terminal-revocation': {
+      scope: 'local',
+      run: () => shellHub.endRevoked((meta) => terminalRevocation(db, meta)),
+    },
+    'colocated-self-repair': { scope: 'local', run: () => colocatedSelfRepair.tick() },
+    'heartbeat-refresh': { scope: 'local', run: () => heartbeatReader.refresh() },
+    // Shared: offline detection and the stale-command recovery.
+    'stale-presence': {
+      scope: 'shared',
+      run: async () => {
         await sweepStalePresence(db, daemonCellRegistry, resolveSender)
-      } catch (err) {
-        logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
-      }
-      try {
-        // An ordinary disconnect that outlasts the same grace the sweep uses.
+      },
+    },
+    // An ordinary disconnect that outlasts the same grace the sweep uses.
+    'disconnect-notice': {
+      scope: 'shared',
+      run: async () => {
         await noticeDisconnectedServers(db, {
           graceMs: DAEMON_OFFLINE_SWEEP_MS,
           awaitDelivery: false,
           resolveSender,
         })
-      } catch (err) {
-        logWarn(
-          'daemon-cell',
-          `disconnect notice error: ${err instanceof Error ? err.message : 'unknown error'}`
-        )
-      }
+      },
     },
-    async runCleanup() {
-      // One console link per tick, read the first time a mail sweep needs it.
-      let tickEmail: Promise<EmitEmail> | null = null
-      const email = () => (tickEmail ??= consoleEmail())
-      // Workers parity (offline-sweep cron): bounded cleanup of expired
-      // `dispatch` failure-retention payloads on the process-long db.
-      await runCleanupPhase('command dispatch sweep', () =>
-        sweepExpiredCommandDispatch(db, {
-          limit: COMMAND_DISPATCH_SWEEP_LIMIT,
-        })
-      )
-      // Recover commands stranded non-terminal by a mid-run restart (the
-      // consumer's timeout lives only in memory), then unwedge managed rows
-      // stuck at 'applying' with no live command left.
-      await runCleanupPhase('stale command sweep', () =>
-        sweepStaleCommandsPhase(db, isNoopCommandQueue(commandQueue) ? undefined : commandQueue)
-      )
-      // Workers parity (offline-sweep cron): drop webhook delivery ids past the
-      // replay-protection retention window.
-      await runCleanupPhase('webhook delivery sweep', () =>
-        sweepExpiredWebhookDeliveries(db, {
-          limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
-        })
-      )
-      // Workers parity (offline-sweep cron): drop used sign-in challenges past
-      // their window. Open sockets are re-checked per frame here, not swept.
-      await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
-      // Workers parity (offline-sweep cron): staged pin silence alarms for
-      // pinned servers a TurboFabric peer still reaches (daemon/pin-silence.ts).
-      await runCleanupPhase('pin silence sweep', async () =>
-        sweepPinSilence(db, dataEncryptionSecrets, { email: await email() })
-      )
-      // Workers parity (offline-sweep cron): tell each organization about the
-      // folders that became orphans since the last tick, once per orphan.
-      await runCleanupPhase('orphan folder alert sweep', async () =>
-        alertNewOrphanFolders(db, dataEncryptionSecrets, {
-          email: await email(),
-        })
-      )
-      // Workers parity (offline-sweep cron): resend notification deliveries
-      // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
-      await runCleanupPhase('notification retry sweep', async () =>
-        retryDueDeliveries(db, dataEncryptionSecrets, {
+    // A lost database host (`daemon/cell/host-loss-tick.ts`): never throws.
+    'host-loss': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runHostLossTick(db, { commandQueue, registry: daemonCellRegistry, env: ctx.env })
+      },
+    },
+    'stale-command-sweep': {
+      scope: 'shared',
+      run: () => sweepStaleCommandsPhase(db, noopQueue ? undefined : commandQueue),
+    },
+    'command-dispatch-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await sweepExpiredCommandDispatch(db, { limit: COMMAND_DISPATCH_SWEEP_LIMIT })
+      },
+    },
+    'webhook-delivery-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await sweepExpiredWebhookDeliveries(db, { limit: WEBHOOK_DELIVERY_SWEEP_LIMIT })
+      },
+    },
+    'daemon-nonce-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await pruneExpiredNonces(db)
+      },
+    },
+    'pin-silence-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await sweepPinSilence(db, dataEncryptionSecrets, { email: await email() })
+      },
+    },
+    'orphan-folder-alert-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await alertNewOrphanFolders(db, dataEncryptionSecrets, { email: await email() })
+      },
+    },
+    'notification-retry-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await retryDueDeliveries(db, dataEncryptionSecrets, {
           allowPrivateTargets: true,
           email: await email(),
         })
-      )
-      // Workers parity (offline-sweep cron): one summary email per channel
-      // for the events held by a digest cadence or quiet hours.
-      await runCleanupPhase('notification digest sweep', async () =>
-        sendDueDigests(db, {
+      },
+    },
+    'notification-digest-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await sendDueDigests(db, {
           secrets: dataEncryptionSecrets,
           allowPrivateTargets: true,
           email: await email(),
         })
-      )
-      // Workers parity (offline-sweep cron): bounded removal of command
-      // transcripts past retention. Object/filesystem only — no db involved.
-      await runCleanupPhase('execution log sweep', () =>
-        executionLogStore.sweepExpired({
+      },
+    },
+    // Object or filesystem only: no database involved.
+    'execution-log-sweep': {
+      scope: 'shared',
+      run: async () => {
+        await executionLogStore.sweepExpired({
           retentionDays: executionLogRetentionDays,
           limit: EXECUTION_LOG_SWEEP_LIMIT,
         })
-      )
-      await runCleanupPhase('upgrade history prune', () =>
-        pruneUpgradeHistory(db, {
-          doneRetentionDays: parseUpgradeStepRetentionDays(
-            Deno.env.get('TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS')
-          ),
-        })
-      )
-      // Workers parity: that cron prunes on its 15-minute window, not every tick.
-      if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
-        lastCommandPruneMs = Date.now()
+      },
+    },
+    'history-prune': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runCleanupPhase('upgrade history prune', () =>
+          pruneUpgradeHistory(db, {
+            doneRetentionDays: parseUpgradeStepRetentionDays(
+              ctx.env.TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS
+            ),
+          })
+        )
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
         await runCleanupPhase('audit history prune', async () =>
           pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
         )
-        // Workers parity (offline-sweep cron): inbox after 90 days, events and
-        // the ledger after 30, and settings of people who left an organization.
-        await runCleanupPhase('notification history prune', () => pruneNotificationHistory(db))
-      }
-      // Edge address ranges for proxy modes: the fetch itself runs at most once
-      // a day inside the tick. The daemon hears only about a changed body
-      // (new ranges, or a field a newer build sends, like the public port).
-      if (Date.now() - lastEdgeTrustTickMs >= EDGE_TRUST_TICK_INTERVAL_MS) {
-        lastEdgeTrustTickMs = Date.now()
-        await runCleanupPhase('edge trust refresh', () =>
-          runEdgeTrustTick(db, () =>
-            applyStoredPublicUrls({
-              db,
-              registry: daemonCellRegistry,
-              secretsConfig,
-              dataEncryptionSecrets,
-              env: Deno.env.toObject(),
-            })
-          )
+        await runCleanupPhase('terminal close rows', () => closeAbandonedTerminalOpens(db))
+        await runCleanupPhase('peak history prune', () => prunePeaks(db))
+      },
+    },
+    // Inbox after 90 days, events and the ledger after 30, and settings of
+    // people who left an organization.
+    'notification-history-prune': {
+      scope: 'shared',
+      run: async () => {
+        await pruneNotificationHistory(db)
+      },
+    },
+    // Edge address ranges for proxy modes: the fetch itself runs at most once
+    // a day inside the tick. The daemon hears only about a changed body
+    // (new ranges, or a field a newer build sends, like the public port).
+    'edge-trust-refresh': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runEdgeTrustTick(db, () =>
+          applyStoredPublicUrls({
+            db,
+            registry: daemonCellRegistry,
+            secretsConfig,
+            dataEncryptionSecrets,
+            env: ctx.env,
+          })
         )
-      }
-      await runCleanupPhase('upgrade tick', async () => {
-        const env = Deno.env.toObject()
-        const revision = resolveInstanceRevision(env)
+      },
+    },
+    'upgrade-tick': {
+      scope: 'shared',
+      run: async (ctx) => {
+        const revision = resolveInstanceRevision(ctx.env)
         const colocated = await resolveColocatedServerId(db, daemonCellRegistry)
         await runUpgradeMaintenance({
           db,
           registry: daemonCellRegistry,
           runtime: 'deno',
           resolveManifests: true,
-          env,
-          instanceInstalled: {
-            version: INSTANCE_VERSION,
-            commit: revision.commit,
-          },
-          buildLabel: resolveBuildLabel(env),
+          env: ctx.env,
+          cadences: ctx.cadences,
+          instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+          buildLabel: resolveBuildLabel(ctx.env),
           colocatedServerId: colocated,
         })
-      })
-      runSystemReconcileSweepTick()
-      // Retries a failed co-located credential repair while a socket refusal is recent.
-      void colocatedSelfRepair.tick()
+      },
     },
-  })
-  const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
-  const heartbeatTimer = setInterval(() => void heartbeatReader.refresh(), HEARTBEAT_REFRESH_MS)
-
-  // First Deno-side scheduled surface besides cell maintain: Organization CA
-  // leaf renewal, the other certificate sweeps and the tunnel sweeps. Fresh
-  // createDenoDb() per tick, always endDbConnection in finally — do not reuse
-  // the process-long `db` (same discipline as Workers Hyperdrive).
-  // Overlap-guarded; one minute, like the hosted cron.
-  const runCertificateSweeps = async (tickDb: Db): Promise<void> => {
-    try {
-      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
-      // bounded batch; reset when the sweep completes or the cursor is
-      // invalid). A due peer leaf goes out with its tunnel table, as on the
-      // hosted cron.
-      await runLeafRenewalSweepTick(tickDb, commandQueue, {
-        secretsConfig,
-        dataEncryptionSecrets,
-        deliverPeerLeaf: peerLeafDelivery(commandQueue, { secretsConfig, dataEncryptionSecrets }),
-      })
-      // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
-      // The secrets let a newly pinned certificate go out at once.
-      await runHostingLetsEncryptSweepTick(tickDb, {
-        apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
-      })
-      // DNS-validated certificates: no order and no renewal from the control plane;
-      // only challenge records it made are removed, through the DNS provider.
-      await runDnsCertificateCleanupTick(
-        buildDnsCertContext(tickDb, { secrets: dataEncryptionSecrets })
-      )
-      // Certificates a serving server orders at the panel's request.
-      await runHttpIssuanceSweepTick(tickDb, {
-        registry: daemonCellRegistry,
-        push: { commandQueue, secretsConfig },
-        secrets: dataEncryptionSecrets,
-        env: runtimeEnv,
-      })
-    } catch (err) {
-      logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
-    }
-  }
-  let leafRenewalInFlight = false
-  const leafRenewalTimer = setInterval(() => {
-    if (leafRenewalInFlight) return
-    if (isNoopCommandQueue(commandQueue)) return
-    leafRenewalInFlight = true
-    void (async () => {
-      const tickDb = createDenoDb()
-      try {
-        await runCertificateSweeps(tickDb)
-        // Tunnel tables, connectors, removals, token recheck and connector
-        // status: the hosted cron's list, each sweep on its own (never throws).
-        await runSelfHostedTunnelSweeps(tickDb, {
+    // The reconnect-repair family: a connected server, routinely on the
+    // cadence and every minute while a reconnect is recent (system reconcile
+    // and the managed-ingress orphan pass).
+    'system-reconcile': {
+      scope: 'shared',
+      run: () => runSystemReconcileSweep(db, commandQueue),
+    },
+    // Separate call: it enqueues `managed.ingress.reconcile` (needs secrets for
+    // payload sealing), which `system.reconcile` cannot express.
+    'managed-ingress-orphan-sweep': {
+      scope: 'shared',
+      run: () =>
+        runManagedIngressOrphanSweep(db, commandQueue, { secretsConfig, dataEncryptionSecrets }),
+    },
+    // An external-access change that never reached its server is pushed again
+    // here until the server confirms it.
+    'managed-external-access-pending-sweep': {
+      scope: 'shared',
+      run: () =>
+        runManagedExternalAccessPendingSweep(db, commandQueue, {
+          secretsConfig,
+          dataEncryptionSecrets,
+        }),
+    },
+    // Automatic membership repins stamp `ip.repin_pending_fanout_at` from the
+    // presence path (which must not enqueue); this drains them.
+    'datacenter-repin-fanout-sweep': {
+      scope: 'shared',
+      run: () =>
+        runDatacenterRepinFanoutSweep(db, commandQueue, { secretsConfig, dataEncryptionSecrets }),
+    },
+    // Throttled inside, so extra ticks cost nothing.
+    'network-probe-sweep': {
+      scope: 'shared',
+      run: () => runNetworkProbeSweep(db, daemonCellRegistry),
+    },
+    'backups-reconcile-sweep': {
+      scope: 'shared',
+      run: () =>
+        runBackupsReconcileSweep(db, commandQueue, {
+          copyDeps:
+            secretsConfig && dataEncryptionSecrets
+              ? { secretsConfig, dataEncryptionSecrets }
+              : undefined,
+        }),
+    },
+    'folder-removal-sweep': {
+      scope: 'shared',
+      run: () => runFolderRemovalSweep(db, commandQueue),
+    },
+    'principal-removal-sweep': {
+      scope: 'shared',
+      run: () => runPrincipalRemovalSweep(db, commandQueue, secretsConfig),
+    },
+    'folder-reconcile-sweep': {
+      scope: 'shared',
+      run: () => runFolderReconcileSweep(db, commandQueue, secretsConfig),
+    },
+    'firewall-preview-sweep': {
+      scope: 'shared',
+      run: (ctx) =>
+        runFirewallPreviewSweep(db, commandQueue, {
+          applyGate: firewallApplyGateFromEnv(ctx.env),
+        }),
+    },
+    // Certificates and tunnels. A fresh database client per tick, closed once
+    // after it (the process-long `db` is not reused here, same discipline as
+    // Workers Hyperdrive).
+    // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor. A due peer leaf
+    // goes out with its tunnel table, as on the hosted cron.
+    'leaf-renewal': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runLeafRenewalSweepTick(certificateDb(ctx), commandQueue, {
+          secretsConfig,
+          dataEncryptionSecrets,
+          deliverPeerLeaf: peerLeafDelivery(commandQueue, { secretsConfig, dataEncryptionSecrets }),
+        })
+      },
+    },
+    // Waiting Let's Encrypt requests (DNS not ready yet). The secrets let a
+    // newly pinned certificate go out at once.
+    'hosting-certificate-sweep': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runHostingLetsEncryptSweepTick(certificateDb(ctx), {
+          apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+        })
+      },
+    },
+    // DNS-validated certificates: only challenge records the control plane
+    // made are removed, through the DNS provider.
+    'dns-certificate-cleanup': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runDnsCertificateCleanupTick(
+          buildDnsCertContext(certificateDb(ctx), { secrets: dataEncryptionSecrets })
+        )
+      },
+    },
+    // Certificates a serving server orders at the panel's request.
+    'http-certificate-issuance': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runHttpIssuanceSweepTick(certificateDb(ctx), {
+          registry: daemonCellRegistry,
+          push: { commandQueue, secretsConfig },
+          secrets: dataEncryptionSecrets,
+          env: ctx.env,
+        })
+      },
+    },
+    // Tunnel tables, connectors, removals, token recheck and connector
+    // status: the hosted cron's list, each sweep on its own (never throws).
+    'tunnel-sweeps': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await runSelfHostedTunnelSweeps(certificateDb(ctx), {
           commandQueue,
           secretsConfig,
           dataEncryptionSecrets,
         })
-      } finally {
-        await endDbConnection(tickDb).catch(() => {})
-        leafRenewalInFlight = false
-      }
-    })()
-  }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
-
-  // Self-hosted ingress: DNS-01 orders for the control plane's own names,
-  // edge tunnel health and the daily provider token recheck.
-  const ingressTimer = startIngressTimer(
-    {
-      dataEncryption: dataEncryptionSecrets,
-      secretsConfig,
-      registry: daemonCellRegistry,
-      env: runtimeEnv,
-      selfKid: () => panelIdentity.current.kid,
-      commandQueue,
-      email: consoleEmail,
+      },
     },
-    { open: createDenoDb, close: endDbConnection }
-  )
+    // Self-hosted ingress: DNS-01 orders for the control plane's own names,
+    // edge tunnel health and the daily provider token recheck.
+    'ingress-tick': {
+      scope: 'shared',
+      run: async (ctx) => {
+        await ingressTick(certificateDb(ctx))
+      },
+    },
+  }
+  const jobs = tickJobsFromTable(handlers, { queue: !noopQueue })
+  const jobTick = createJobTick({
+    jobs,
+    readEnv: () => Deno.env.toObject(),
+    loadCadences: (env) => loadJobCadences(db, env),
+    // `loadCronGates` opens every flag when its read fails.
+    loadGates: (nowMs) =>
+      loadCronGates(db, {
+        now: new Date(nowMs),
+        onError: (err) => logWarn('job-tick', `gate read failed: ${String(err)}`),
+      }),
+    acquireLease: async (nowMs, heldUntilMs) => {
+      const lock = await tryBeginOfflineSweep(db, nowMs, { heldUntilMs })
+      return lock
+        ? {
+            release: () => endOfflineSweep(db, lock),
+            renew: (renewNowMs, renewUntilMs) =>
+              renewOfflineSweep(db, lock, renewNowMs, renewUntilMs),
+          }
+        : null
+    },
+    log: (level, message) => (level === 'warn' ? logWarn : logInfo)('job-tick', message),
+  })
+  // The one Deno process timer (not a Durable Object): cost-safe. The sub-minute
+  // event-driven loops (outbox pump, Redis block read) are not on it.
+  const jobTickTimer = setInterval(() => void jobTick.run(), JOB_TICK_MS)
 
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer, ingressTimer],
+    timers: [jobTickTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

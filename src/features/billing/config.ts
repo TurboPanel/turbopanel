@@ -38,7 +38,7 @@ export const STRIPE_COUPON_ALLOWED_ENV = 'TURBOPANEL_STRIPE_IS_COUPON_ALLOWED'
  * the subscription to its items in the `basil` line). Bumping this constant
  * is a code change that runs the tests.
  */
-export const DEFAULT_STRIPE_API_VERSION = '2026-09-30.endive'
+export const DEFAULT_STRIPE_API_VERSION = '2026-11-18.endive'
 
 export type BillingConfig = Readonly<{
   /** `sk_live_…` / `sk_test_…`. Presence is what builds a config at all. */

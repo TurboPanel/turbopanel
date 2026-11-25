@@ -619,7 +619,7 @@ test('ensureComposePrincipal follows the org default scheme and stores it', asyn
     const scenarios = [
       { options: null, alias: 'wpuser', scheme: 'partial', shape: /^wpuser_[a-z0-9]{11}$/ },
       {
-        options: { randomizedPrincipalUsernames: false },
+        options: { principalNameScheme: 'plain' },
         alias: 'plainuser',
         scheme: 'plain',
         shape: /^plainuser$/,

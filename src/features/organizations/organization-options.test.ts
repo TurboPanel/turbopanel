@@ -11,7 +11,6 @@ import {
   resolveDeployHooksEnabled,
   resolveDeployTimeoutMs,
   resolvePrincipalNamePolicy,
-  resolveRandomizedPrincipalUsernames,
   resolveTemperatureUnit,
 } from './organization-options.ts'
 
@@ -160,23 +159,12 @@ test('resolveTemperatureUnit defaults to celsius', () => {
   assertEquals(resolveTemperatureUnit({ temperatureUnit: 'fahrenheit' }), 'fahrenheit')
 })
 
-Deno.test('randomizedPrincipalUsernames parses and defaults to on', () => {
+test('a stored legacy randomizedPrincipalUsernames key is ignored', () => {
   assertEquals(
-    parseOrganizationOptions({ randomizedPrincipalUsernames: false }).randomizedPrincipalUsernames,
+    'randomizedPrincipalUsernames' in
+      parseOrganizationOptions({ randomizedPrincipalUsernames: false }),
     false
   )
-  assertEquals(
-    parseOrganizationOptions({ randomizedPrincipalUsernames: 'no' }).randomizedPrincipalUsernames,
-    undefined
-  )
-  assertEquals(resolveRandomizedPrincipalUsernames({}), true)
-  assertEquals(
-    resolveRandomizedPrincipalUsernames({
-      randomizedPrincipalUsernames: false,
-    }),
-    false
-  )
-  assertEquals(resolveRandomizedPrincipalUsernames({ randomizedPrincipalUsernames: true }), true)
 })
 
 test('principal name scheme options parse and default to partial', () => {
@@ -196,13 +184,15 @@ test('principal name scheme options parse and default to partial', () => {
     parseOrganizationOptions({ principalNameSchemeLocked: 'yes' }).principalNameSchemeLocked,
     undefined
   )
-  assertEquals(resolvePrincipalNamePolicy({}), { defaultScheme: 'partial', locked: false })
-  assertEquals(resolvePrincipalNamePolicy({ randomizedPrincipalUsernames: false }), {
-    defaultScheme: 'plain',
+  assertEquals(resolvePrincipalNamePolicy({}), {
+    defaultScheme: 'partial',
     locked: false,
   })
   assertEquals(
-    resolvePrincipalNamePolicy({ principalNameScheme: 'random', principalNameSchemeLocked: true }),
+    resolvePrincipalNamePolicy({
+      principalNameScheme: 'random',
+      principalNameSchemeLocked: true,
+    }),
     { defaultScheme: 'random', locked: true }
   )
 })

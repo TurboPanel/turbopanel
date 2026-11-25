@@ -45,11 +45,10 @@ const NULL_HOST = {
 const sample: AuthenticatedMetricsSample = {
   ...buildMetricsSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
     },
     host: NULL_HOST,

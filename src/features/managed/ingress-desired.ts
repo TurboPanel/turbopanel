@@ -52,10 +52,6 @@ import {
   mainClientAddressHost,
   resolveClientAddresses,
 } from '../net/client-addresses-pure.ts'
-import {
-  MANAGED_INGRESS_IPV6_FEATURE,
-  MANAGED_LOGIN_LIMITS_FEATURE,
-} from '../../lib/version-wire.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
@@ -265,9 +261,6 @@ async function loadClusterUsersForManagedIds(
     .innerJoin(managed, eq(managed.id, login.managedId))
     .where(inArray(login.managedId, [...managedIds]))
 
-  const daemonSupportsLimits = (daemonState.projection?.features ?? []).includes(
-    MANAGED_LOGIN_LIMITS_FEATURE
-  )
   const serverAddresses = await loadServerAddressMap(
     db,
     rows.flatMap((row) => loginSourceServerIds(loginSourcesFromStored(row.allowedSources)))
@@ -322,14 +315,11 @@ async function loadClusterUsersForManagedIds(
           maxConnections: row.maxConnections ?? undefined,
         },
         {
-          daemonSupportsLimits,
           serverAddresses,
           serverId: params.serverId,
         }
       )
-      // Fail closed: a source-limited login never goes to a daemon that cannot enforce it.
-      if (limits.omit) return undefined
-      Object.assign(user, limits.fields)
+      Object.assign(user, limits)
     }
     const list = byManaged.get(row.managedId) ?? []
     list.push(user)
@@ -594,12 +584,6 @@ function resolveListenerClientNames(
   }
 }
 
-/** The server's daemon advertises `managed-ingress-ipv6-v1` on its hello. */
-async function daemonPublishesIngressIpv6(db: Db, serverId: string): Promise<boolean> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return (state?.projection?.features ?? []).includes(MANAGED_INGRESS_IPV6_FEATURE)
-}
-
 type BuiltManagedIngressReconcile = {
   payload: ManagedIngressReconcileCommandPayload
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
@@ -699,8 +683,6 @@ async function buildManagedIngressReconcileDesired(
   const addressFacts = await loadClientAddressFacts(db, params.serverId)
   const bindAddresses = decideIngressBindAddresses(externalAccess, {
     serverHasIpv6: addressFacts !== null && hostHasIpv6(addressFacts.reportedIps),
-    // Only asked when it matters: loopback-only never publishes on IPv6.
-    daemonPublishesIpv6: externalAccess && (await daemonPublishesIngressIpv6(db, params.serverId)),
   })
 
   const clientNames = resolveListenerClientNames(addressFacts, externalAccess)

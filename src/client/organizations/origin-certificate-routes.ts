@@ -1,6 +1,6 @@
 /**
  * Origin certificates a tunnel provider issues for an organization's zones,
- * for the optional verified hop between the connector and the web server.
+ * for the verified hop between the connector and the web server.
  * Owners and managers only (the same check as provider accounts). The key is
  * made here and stays sealed in the certificate library; responses carry the
  * names, expiry and whether a site uses the certificate, never a key.
@@ -16,8 +16,6 @@ import { firstSequential } from '../../lib/sequential.ts'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import { tls } from '../../db/schema.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
-import { findTunnel, toApiTunnel, TunnelRefusal } from '../../features/tunnels/lifecycle.ts'
-import { setVerifyOrigin } from '../../features/tunnels/verify-origin.ts'
 import {
   badgeCoversZone,
   describeExistingOriginCertificates,
@@ -33,7 +31,6 @@ import {
 import {
   type BadgeRow,
   type CarrierRow,
-  findCarrier,
   listBadges,
   pickBadges,
   openBadgeToken,
@@ -338,65 +335,20 @@ function existingResponse(registry: TunnelAdapterRegistry) {
   }
 }
 
-/** Turn the verified connection on or off for one tunnel (see `setVerifyOrigin`). */
-function verifyOriginResponse(registry: TunnelAdapterRegistry) {
-  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
-    const tunnelId = c.req.param('tunnelId') as string
-    if (!isUuid(tunnelId)) return c.json({ error: 'Not found' }, 404)
-    const row = await findTunnel(scope.db, scope.organizationId, tunnelId)
-    const owner = row?.carrierId
-      ? await findCarrier(scope.db, scope.organizationId, row.carrierId)
-      : null
-    if (!row || !owner) return c.json({ error: 'Not found' }, 404)
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-    if (typeof body.enabled !== 'boolean') {
-      return c.json(
-        {
-          error: 'tunnel_invalid',
-          field: 'enabled',
-          detail: 'Say whether to verify the connection.',
-        },
-        400
-      )
-    }
-    const secrets = c.get('dataEncryptionSecrets')
-    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
-    try {
-      const done = await setVerifyOrigin(
-        {
-          db: scope.db,
-          secrets,
-          adapter: registry(owner.provider as TunnelProvider),
-          organizationId: scope.organizationId,
-        },
-        owner,
-        row,
-        body.enabled,
-        body.wildcard === true ? 'wildcard' : 'names'
-      )
-      await audit(c, scope, 'tunnel.update', row.id, {
-        name: row.name,
-        verifyOrigin: body.enabled,
-      })
-      return c.json({
-        tunnel: await toApiTunnel(scope.db, done.tunnel),
-        verifyOrigin: done.state,
-        pinnedHostingIds: done.pinnedHostingIds,
-        // More sites than one request handles: apply again to continue.
-        deferredHostingIds: done.deferredHostingIds,
-        // The servers pick up a new certificate with the site's next deploy.
-        needsDeploy: done.pinnedHostingIds.length > 0,
-      })
-    } catch (err) {
-      if (err instanceof TunnelRefusal) {
-        return c.json({ error: err.code, message: err.message }, err.status)
-      }
-      if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
-      if (err instanceof TunnelProviderError) return providerFailure(c, err)
-      throw err
-    }
-  }
+/**
+ * The tunnel-wide verified connection switch is gone: a name is verified on its
+ * own once its certificate and a deploy carried it. Kept as a plain answer so
+ * an old caller learns why instead of getting a missing route.
+ */
+function verifyOriginGone(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'verify_origin_removed',
+      message:
+        'The Verified Connection switch was removed. A tunnel name is verified by itself once its certificate is in place; choose the certificate for each name instead.',
+    },
+    410
+  )
 }
 
 function revokeResponse(registry: TunnelAdapterRegistry) {
@@ -462,5 +414,8 @@ export function registerOrganizationOriginCertificateRoutes(
   router.post(ORIGIN_CERTIFICATE_PATHS[0], guarded(issueResponse(registry)))
   router.delete(ORIGIN_CERTIFICATE_PATHS[1], guarded(revokeResponse(registry)))
   router.get(ORIGIN_CERTIFICATE_PATHS[2], guarded(existingResponse(registry)))
-  router.put(ORIGIN_CERTIFICATE_PATHS[3], guarded(verifyOriginResponse(registry)))
+  router.put(
+    ORIGIN_CERTIFICATE_PATHS[3],
+    guarded((c) => Promise.resolve(verifyOriginGone(c)))
+  )
 }

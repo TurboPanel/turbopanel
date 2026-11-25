@@ -106,9 +106,9 @@ because `DeleteObjects` requires a Content-MD5 neither runtime can produce.
    successful (or failed) command transition, matching
    `finalizeCommandDispatch`. An unsealed transcript is still readable and still
    reachable by the sweep.
-4. **Retention** — `sweepExpired` rides the **existing** once-a-minute
-   maintenance tick (`offline-sweep.ts` on Workers cron, `DAEMON_CELL_MAINTAIN_MS`
-   on Deno) alongside `sweepExpiredCommandDispatch`. No new timer, no new
+4. **Retention** — `sweepExpired` rides the **existing** minute
+   tick (`offline-sweep.ts` on Workers cron, the job tick in `platform/deno/server.ts`
+   on Deno) on the `executionLogs` cadence (15 minutes by default). No new timer, no new
    connection. Default `EXECUTION_LOG_RETENTION_DAYS` = 90, bounded per tick by
    `EXECUTION_LOG_SWEEP_LIMIT` = 200, probing a bounded run of date partitions so
    one tick's list volume stays constant.

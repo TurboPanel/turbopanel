@@ -1031,7 +1031,7 @@ test('buildFabricReconcilePayloadFromSnapshot hash reflects peer pathKind', asyn
   lanCaches.policyByDatacenter.set('dc-a', {
     addressPreference: 'ipv4',
     priority: 100,
-    trusted: true,
+    trusted: false,
   })
   lanCaches.publicAddressByServer.set('srv-2', '198.51.100.11')
   const publicCaches = emptyCaches()
@@ -1127,9 +1127,8 @@ test('buildFabricReconcilePayloadFromSnapshot runs the tunnel over an untrusted 
     serverId: 'srv-1',
   })
   if (!built?.payload.enabled) throw new TypeError('expected enabled payload')
-  // The trusted (lower-ranked) datacenter still wins over the untrusted one.
-  assertEquals(built.payload.peers[0]?.endpoint, '10.7.0.2:51830')
-  assertEquals(built.payload.peers[0]?.pathKind, 'direct_lan')
+  // A trusted shared network carries the pair without a tunnel.
+  assertEquals(built.payload.peers.length, 0)
 
   // Untrusted-only: the tunnel runs over that LAN (encrypted) ahead of the
   // public address, instead of crossing the internet.
@@ -1502,12 +1501,12 @@ test('buildFabricReconcilePayloadFromSnapshot routes a destination through one g
   caches.policyByDatacenter.set('dc-src', {
     addressPreference: 'ipv4',
     priority: 100,
-    trusted: true,
+    trusted: false,
   })
   caches.policyByDatacenter.set('dc-dst', {
     addressPreference: 'ipv4',
     priority: 100,
-    trusted: true,
+    trusted: false,
   })
   caches.publicAddressByServer.set('srv-gw', '203.0.113.20')
   const built = await buildFabricReconcilePayloadFromSnapshot(
@@ -1601,12 +1600,12 @@ test('buildFabricReconcilePayloadFromSnapshot hash changes when the next hop cha
   caches.policyByDatacenter.set('dc-src', {
     addressPreference: 'ipv4',
     priority: 100,
-    trusted: true,
+    trusted: false,
   })
   caches.policyByDatacenter.set('dc-dst', {
     addressPreference: 'ipv4',
     priority: 100,
-    trusted: true,
+    trusted: false,
   })
   caches.publicAddressByServer.set('srv-gw-a', '203.0.113.20')
   caches.publicAddressByServer.set('srv-gw-z', '203.0.113.21')

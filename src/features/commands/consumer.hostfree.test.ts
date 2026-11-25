@@ -35,6 +35,7 @@ import {
   resolveManagedMemberIdFromFailedPayload,
 } from './consumer.ts'
 import { RECOVERY_STEP_FAILED_MESSAGE } from '../managed/recovery.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { setResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -48,6 +49,19 @@ setResolveFleetPresence(resolveFleetPresence)
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('failureErrorCodeField names a deploy that failed its post-deploy commands after the switch', () => {
+  const text = 'post_deploy_failed_after_switch: Post-deploy commands for site web failed.'
+  assertEquals(failureErrorCodeField('environment.deploy', null, text), {
+    errorCode: 'deploy_post_deploy_failed_after_switch',
+  })
+  // Another command type, or an older daemon's plain sentence, gets no code.
+  assertEquals(failureErrorCodeField('storage.backup', null, text), {})
+  assertEquals(
+    failureErrorCodeField('environment.deploy', null, 'Post-deploy commands for site web failed'),
+    {}
+  )
+})
 
 test('failureErrorCodeField names a restore whose backup is gone', () => {
   const gone = 'backup bk_01 is not on this host'
@@ -527,6 +541,15 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
                             publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
                             fingerprint: 'fp',
                             createdAt: '2020-01-01T00:00:00.000Z',
+                          },
+                          // A daemon the control plane dispatches to reports a
+                          // usable version and lists every wire feature.
+                          projection: {
+                            daemonBuild: {
+                              commit: 'abc1234',
+                              version: MIN_SUPPORTED_DAEMON_VERSION,
+                            },
+                            features: [...DAEMON_WIRE_FEATURES],
                           },
                         },
                         metadata: null,

@@ -767,13 +767,13 @@ test('lintComposeYaml skips image requirement for an image-built source', () => 
   )
 })
 
-test('lintComposeYaml skips image requirement for a source with the old build kind value', () => {
+test('lintComposeYaml skips image requirement for a source with the image build kind', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
       source:
         sourceId: ${SOURCE_ID}
-        buildKind: railpack
+        buildKind: image
 `)
   assertEquals(
     issues.some((issue) => issue.path === 'services.app' && issue.message.includes('image')),
@@ -781,13 +781,13 @@ test('lintComposeYaml skips image requirement for a source with the old build ki
   )
 })
 
-test('lintComposeYaml trims whitespace around the old buildKind value', () => {
+test('lintComposeYaml trims whitespace around the buildKind value', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
       source:
         sourceId: ${SOURCE_ID}
-        buildKind: "  railpack  "
+        buildKind: "  image  "
 `)
   assertEquals(
     issues.some((issue) => issue.path === 'services.app' && issue.message.includes('image')),
@@ -1390,4 +1390,100 @@ test('unsupported, gated and invalid keys read differently at save and at deploy
     blockingComposeLintIssues(save).map((issue) => issue.path),
     ['services.web.imaage']
   )
+})
+
+const VPN_PAIR = `services:
+  vpn:
+    build: ./vpn
+    cap_add: [NET_ADMIN]
+    ports: ["8080:8080"]
+  qbittorrent:
+    image: qbittorrent:latest
+    network_mode: service:vpn
+`
+
+test('network_mode alone is accepted', () => {
+  assertEquals(
+    lintWithoutResourceAdvisory(VPN_PAIR).filter((issue) => issue.level === 'error'),
+    []
+  )
+})
+
+test('networks beside network_mode is refused', () => {
+  const issues = lintWithoutResourceAdvisory(
+    VPN_PAIR.replace(
+      'network_mode: service:vpn',
+      'network_mode: service:vpn\n    networks: [default]'
+    )
+  ).filter((issue) => issue.level === 'error')
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ['services.qbittorrent.networks']
+  )
+})
+
+test('a hosting route on a service sharing another network names the service to route to', () => {
+  const source = VPN_PAIR.replace(
+    'network_mode: service:vpn',
+    `network_mode: service:vpn
+    x-turbopanel:
+      hosting:
+        - hostname: torrent.example.net`
+  )
+  const issues = lintWithoutResourceAdvisory(source).filter((issue) => issue.level === 'error')
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ['services.qbittorrent.x-turbopanel.hosting']
+  )
+  assertEquals(issues[0]?.message.includes('Declare the ingress route on "vpn"'), true)
+})
+
+test('a hosting route on a network_mode none, host or container service is refused', () => {
+  const route = `
+    x-turbopanel:
+      hosting:
+        - hostname: torrent.example.net`
+  const none = lintWithoutResourceAdvisory(
+    VPN_PAIR.replace('network_mode: service:vpn', `network_mode: none${route}`)
+  ).filter((issue) => issue.level === 'error')
+  assertEquals(none.length, 1)
+  const host = lintWithoutResourceAdvisory(
+    VPN_PAIR.replace('network_mode: service:vpn', `network_mode: host${route}`)
+  ).filter((issue) => issue.level === 'error')
+  assertEquals(host.length, 1)
+  assertEquals(host[0]?.message.includes('not on the project network'), true)
+  const container = lintWithoutResourceAdvisory(
+    VPN_PAIR.replace('network_mode: service:vpn', `network_mode: container:other${route}`)
+  ).filter((issue) => issue.level === 'error')
+  assertEquals(container.length, 1)
+  assertEquals(container[0]?.message.includes('container "other"'), true)
+})
+
+test('an author external top-level volume is refused with field_unsupported', () => {
+  const issues = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n    external: true\n  named:\n    external:\n      name: shared\n'
+  ).filter((issue) => issue.code === 'field_unsupported')
+  // Advice while editing, an error at deploy.
+  assertEquals(
+    issues.map((issue) => [issue.level, issue.path]),
+    [
+      ['warning', 'volumes.data.external'],
+      ['warning', 'volumes.named.external'],
+    ]
+  )
+  const strict = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n    external: true\n',
+    { strict: true }
+  ).filter((issue) => issue.code === 'field_unsupported')
+  assertEquals(
+    strict.map((issue) => [issue.level, issue.path]),
+    [['error', 'volumes.data.external']]
+  )
+})
+
+test('a plain top-level volume and external: false are not refused', () => {
+  const issues = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n  other:\n    external: false\n'
+  ).filter((issue) => issue.code === 'field_unsupported')
+  assertEquals(issues, [])
 })

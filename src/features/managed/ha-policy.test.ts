@@ -219,13 +219,17 @@ test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
 
 test('selectHaRaftMembers keeps the raft group inside this server datacenter', () => {
   const pins = new Map([
-    ['lan-a', [{ datacenterId: 'dc-lan', address: '10.10.1.10', family: 4 as const }]],
-    ['lan-b', [{ datacenterId: 'dc-lan', address: '10.10.1.20', family: 4 as const }]],
+    ['lan-a', [{ datacenterId: 'dc-lan', address: '10.50.1.10', family: 4 as const }]],
+    ['lan-b', [{ datacenterId: 'dc-lan', address: '10.50.1.20', family: 4 as const }]],
     ['vpc-a', [{ datacenterId: 'dc-vpc', address: '10.100.0.4', family: 4 as const }]],
     ['vpc-b', [{ datacenterId: 'dc-vpc', address: '10.100.0.5', family: 4 as const }]],
   ])
   const all = ['lan-a', 'lan-b', 'vpc-a', 'vpc-b']
-  assertEquals(selectHaRaftMembers('vpc-a', all, pins), {
+  const trusted = new Map([
+    ['dc-lan', { priority: 100, trusted: true }],
+    ['dc-vpc', { priority: 100, trusted: true }],
+  ])
+  assertEquals(selectHaRaftMembers('vpc-a', all, pins, trusted), {
     advertiseAddress: '10.100.0.4',
     peers: [
       { serverId: 'vpc-a', address: '10.100.0.4' },
@@ -233,7 +237,7 @@ test('selectHaRaftMembers keeps the raft group inside this server datacenter', (
     ],
   })
   assertEquals(
-    selectHaRaftMembers('lan-b', all, pins)?.peers.map((peer) => peer.serverId),
+    selectHaRaftMembers('lan-b', all, pins, trusted)?.peers.map((peer) => peer.serverId),
     ['lan-a', 'lan-b']
   )
 })
@@ -249,11 +253,12 @@ test('selectHaRaftMembers dials a multi-datacenter peer on its shared-datacenter
       ],
     ],
   ])
-  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins)?.peers, [
+  const trusted = new Map([['dc-1', { priority: 100, trusted: true }]])
+  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins, trusted)?.peers, [
     { serverId: 'a', address: '10.0.0.1' },
     { serverId: 'b', address: '10.0.0.2' },
   ])
-  assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins), null)
+  assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins, trusted), null)
 })
 
 test('pickHaAdvertiseAddress does not depend on row order', () => {
@@ -338,7 +343,13 @@ test('assignHaRaftDatacenters breaks a priority tie by datacenter id and default
       ],
     ],
   ])
-  assertEquals(assignHaRaftDatacenters(['a'], pins, new Map()).get('a'), 'dc-a')
+  // A datacenter with no policy entry is untrusted: Raft takes no group there.
+  assertEquals(assignHaRaftDatacenters(['a'], pins, new Map()).get('a'), undefined)
+  const trusted = new Map([
+    ['dc-a', { priority: 100, trusted: true }],
+    ['dc-b', { priority: 100, trusted: true }],
+  ])
+  assertEquals(assignHaRaftDatacenters(['a'], pins, trusted).get('a'), 'dc-a')
   assertEquals(
     assignHaRaftDatacenters(['a'], pins, new Map([['dc-b', { priority: 5, trusted: true }]])).get(
       'a'
@@ -655,7 +666,6 @@ const BOUND_PRIMARY = { host: '10.0.0.5', port: 3306 }
 test('orchestratorBindingRejection: the current primary proceeds', () => {
   assertEquals(
     orchestratorBindingRejection({
-      reporterBindsInstance: true,
       instanceHost: '10.0.0.5',
       instancePort: 3306,
       expectedPrimary: BOUND_PRIMARY,
@@ -665,7 +675,7 @@ test('orchestratorBindingRejection: the current primary proceeds', () => {
 })
 
 test('orchestratorBindingRejection: another host, another port, or no primary address is stale', () => {
-  const base = { reporterBindsInstance: true, expectedPrimary: BOUND_PRIMARY }
+  const base = { expectedPrimary: BOUND_PRIMARY }
   assertEquals(
     typeof orchestratorBindingRejection({ ...base, instanceHost: '10.0.0.6', instancePort: 3306 }),
     'string'
@@ -685,25 +695,14 @@ test('orchestratorBindingRejection: another host, another port, or no primary ad
   )
 })
 
-test('orchestratorBindingRejection: a missing instance is legacy only for a daemon without the feature', () => {
-  assertEquals(
-    orchestratorBindingRejection({ reporterBindsInstance: false, expectedPrimary: BOUND_PRIMARY }),
-    null
-  )
-  assertEquals(
-    typeof orchestratorBindingRejection({
-      reporterBindsInstance: true,
-      expectedPrimary: BOUND_PRIMARY,
-    }),
-    'string'
-  )
+test('orchestratorBindingRejection: a missing instance is stale', () => {
+  assertEquals(typeof orchestratorBindingRejection({ expectedPrimary: BOUND_PRIMARY }), 'string')
 })
 
 test('orchestratorBindingRejection: a local primary is known by its published private listener', () => {
   // The control plane dials a local member by its Docker name; the daemon
   // registers it in Orchestrator as <private ip>:<privatePort>.
   const base = {
-    reporterBindsInstance: true,
     expectedPrimary: { host: 'abc-1', port: 3306 },
     localPrivatePort: 45001,
     localPrimaryHosts: ['172.20.4.10', 'abc-1'],
@@ -740,7 +739,6 @@ test('orchestratorBindingRejection: a local primary is known by its published pr
   // A remote primary (no local private port) is unchanged.
   assertEquals(
     typeof orchestratorBindingRejection({
-      reporterBindsInstance: true,
       expectedPrimary: BOUND_PRIMARY,
       localPrivatePort: null,
       instanceHost: '10.0.0.5',

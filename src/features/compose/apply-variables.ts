@@ -21,6 +21,14 @@ import {
 } from './apply-config-files.ts'
 import type { DeployConfigFileEntry, DeployConfigSecretRef } from './config-files.ts'
 import {
+  type NetworkShareCredential,
+  type ResolvedShareVolume,
+  resolvedSharesCanonical,
+  resolveShareVolume,
+  type ShareCredentialEntry,
+} from './network-share-variables.ts'
+import { isNetworkShareDriverOpts } from './network-shares.ts'
+import {
   collectComposeInterpolationKeys,
   type DbVariableRef,
   formatVariableRef,
@@ -104,12 +112,13 @@ export type ApplyVariablesError = {
     | 'config_interpolation'
     | 'config_file_invalid'
     | 'config_file_shared'
-    | 'config_files_need_daemon_update'
   message: string
   ref?: string
   composeServiceName?: string
   envKey?: string
 }
+
+export type SecretNotInjected = UnreferencedSecret & { composeServiceNames: string[] }
 
 export type ApplyVariablesResult = {
   document: ComposeDocument
@@ -133,6 +142,13 @@ export type ApplyVariablesResult = {
    */
   unreferencedSecrets: Map<string, UnreferencedSecret[]>
   /**
+   * Runtime secrets in scope for container services that **no** container of
+   * the stack received: no `{$KEY}` reference, no binding, no generated config
+   * file and no network share reads it. One entry per secret, with the
+   * services it was in scope for; feeds `secret_variable_not_injected`.
+   */
+  secretsNotInjected: SecretNotInjected[]
+  /**
    * Generated config files (`configs.<name>.content`) as parts. The secrets
    * they read ride in `secretMaterial` with no `secretPlan` entry, so they get
    * no `/run/secrets` mount.
@@ -141,6 +157,19 @@ export type ApplyVariablesResult = {
   /** Secrets the generated files read, kept so a reboot can ask for their values. */
   configSecretRefs: DeployConfigSecretRef[]
   configWarnings: ConfigFileWarning[]
+  /**
+   * Network share volumes whose username, password or domain is a secret: the
+   * keys of the sealed `secretMaterial` entries (same `composeServiceName`).
+   * The volume's `o` in `document` has no credentials; the daemon adds
+   * `username=`, `password=` and `domain=` itself.
+   */
+  networkShareCredentials: NetworkShareCredential[]
+  /**
+   * What the share volumes resolved to (addresses, options and which secret
+   * fills which field, never a value), as stable text; `null` with no shares.
+   * The approval of an automated deploy is judged on its hash.
+   */
+  networkSharesResolved: string | null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -355,6 +384,8 @@ type ApplyServiceState = {
   /** The service is a native (`serviceKind: node`) app — see {@link shouldAutoAttachSecret}. */
   nativeApp: boolean
   unreferencedSecrets: UnreferencedSecret[]
+  /** Container service only: runtime secrets nothing in this service references. */
+  containerUnreferenced: UnreferencedSecret[]
   projectId: string
   environmentId: string
   runDir: string
@@ -630,11 +661,13 @@ function attachUnreferencedSecret(
     if (entry.forRuntime) recordSecretAssignment(state, entry.key, entry)
     return
   }
-  if (state.nativeApp && entry.forRuntime && !state.plannedKeys.has(entry.key)) {
-    state.unreferencedSecrets.push({
+  if (entry.forRuntime && !state.plannedKeys.has(entry.key)) {
+    const listed = {
       key: entry.key,
       ...(entry.source === undefined ? {} : { source: entry.source }),
-    })
+    }
+    if (state.nativeApp) state.unreferencedSecrets.push(listed)
+    else state.containerUnreferenced.push(listed)
   }
 }
 
@@ -674,6 +707,166 @@ function applyEntriesToService(state: ApplyServiceState): ApplyVariablesError | 
   return null
 }
 
+/** The variables a top-level volume sees: the first service's view, else the global entries. */
+function shareVariableView(
+  document: ComposeDocument,
+  params: {
+    globalEntries: DeployVariableEntry[]
+    perServiceEntries: Map<string, DeployVariableEntry[]>
+    perServiceScopes?: Map<string, VariableScopeEntryMap>
+  }
+): { inherited: Map<string, DeployVariableEntry>; scopes: VariableScopeEntryMap | undefined } {
+  const first = listComposeServiceNames(document)[0]
+  return {
+    inherited: entriesToMap([
+      ...params.globalEntries,
+      ...(first === undefined ? [] : (params.perServiceEntries.get(first) ?? [])),
+    ]),
+    scopes: first === undefined ? undefined : params.perServiceScopes?.get(first),
+  }
+}
+
+/**
+ * The network share volumes (top-level volumes with a `cifs` / `smb3` type and
+ * a `//host/share` or `{$KEY}` device), resolved against project variables.
+ * Services are not involved, so the variables are the first service's view (the
+ * project, environment and server layers every service shares); a
+ * service-scoped reference is unresolved.
+ *
+ * What is written to the document is the resolved, checked `device` and `o`
+ * (`$` doubled so Compose leaves them alone). A secret named for the username,
+ * password or domain never reaches the document: it leaves `o` and comes back
+ * as a credentials entry plus sealed material (see `network-share-variables.ts`).
+ * Compose `${...}` in a share's text is refused, so nothing is filled in later
+ * from the generated `.env`.
+ */
+function applyShareVolumeVariables(
+  data: Record<string, unknown>,
+  view: {
+    inherited: Map<string, DeployVariableEntry>
+    scopes: VariableScopeEntryMap | undefined
+  },
+  viewService: string | undefined,
+  sinks: ShareSinks
+): ApplyVariablesError | { credentials: NetworkShareCredential[]; resolved: string | null } {
+  if (!isRecord(data.volumes)) return { credentials: [], resolved: null }
+  const volumes: Record<string, unknown> = { ...data.volumes }
+  const lookup = (ref: ParsedVariableRef) => {
+    const entry = lookupVariable(ref, view.inherited, view.scopes)
+    return entry && { key: entry.key, value: entry.value, isSecret: entry.isSecret }
+  }
+  const credentials: NetworkShareCredential[] = []
+  const resolvedVolumes: Array<readonly [string, ResolvedShareVolume]> = []
+  for (const [name, spec] of Object.entries(volumes)) {
+    if (!isRecord(spec) || !isNetworkShareDriverOpts(spec.driver_opts)) continue
+    const outcome = applyOneShareVolume(name, spec, { lookup, viewService, sinks })
+    if ('kind' in outcome) return outcome
+    volumes[name] = outcome.spec
+    resolvedVolumes.push([name, outcome.resolved])
+    if (outcome.credential !== undefined) credentials.push(outcome.credential)
+  }
+  data.volumes = volumes
+  return {
+    credentials,
+    resolved: resolvedVolumes.length === 0 ? null : resolvedSharesCanonical(resolvedVolumes),
+  }
+}
+
+type ShareSinks = { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] }
+
+/** One share volume: its rewritten spec, what it resolved to and (with a password) its credential. */
+function applyOneShareVolume(
+  name: string,
+  spec: Record<string, unknown>,
+  ctx: {
+    lookup: Parameters<typeof resolveShareVolume>[2]
+    viewService: string | undefined
+    sinks: ShareSinks
+  }
+):
+  | ApplyVariablesError
+  | {
+      spec: Record<string, unknown>
+      resolved: ResolvedShareVolume
+      credential?: NetworkShareCredential
+    } {
+  const driverOpts = spec.driver_opts as Record<string, unknown>
+  // `local` is the only driver whose `driver_opts` are mount options.
+  if (spec.driver !== undefined && spec.driver !== 'local') {
+    return {
+      kind: 'variable_ref_invalid',
+      message: `A network share volume uses the local volume driver (volumes.${name}.driver)`,
+    }
+  }
+  const resolved = resolveShareVolume(name, driverOpts, ctx.lookup)
+  if ('kind' in resolved) return resolved
+  const rewritten = { ...spec, driver_opts: resolvedShareDriverOpts(driverOpts, resolved) }
+  const passwordItem = resolved.credentials.find((item) => item.field === 'password')
+  if (passwordItem === undefined) return { spec: rewritten, resolved }
+  if (ctx.viewService === undefined) {
+    return {
+      kind: 'variable_ref_invalid',
+      message: `A network share with a secret needs a service in the project (volumes.${name}.driver_opts.o)`,
+    }
+  }
+  const credential: NetworkShareCredential = {
+    volume: name,
+    composeServiceName: ctx.viewService,
+    passwordKey: passwordItem.key,
+  }
+  for (const item of resolved.credentials) {
+    if (item.field === 'username') credential.usernameKey = item.key
+    addShareSecret(ctx.sinks, ctx.viewService, item)
+  }
+  if (resolved.plain.username !== undefined) credential.username = resolved.plain.username
+  if (resolved.plain.domain !== undefined) credential.domain = resolved.plain.domain
+  return { spec: rewritten, resolved, credential }
+}
+
+/** The `driver_opts` written to the document: checked values, `$` doubled for Compose. */
+function resolvedShareDriverOpts(
+  driverOpts: Record<string, unknown>,
+  resolved: ResolvedShareVolume
+): Record<string, unknown> {
+  const opts: Record<string, unknown> = {
+    ...driverOpts,
+    type: resolved.type,
+    device: escapeLiteralComposeValue(resolved.device),
+  }
+  if (resolved.o === undefined) delete opts.o
+  else opts.o = escapeLiteralComposeValue(resolved.o)
+  return opts
+}
+
+function addShareSecret(
+  sinks: ShareSinks,
+  composeServiceName: string,
+  item: ShareCredentialEntry
+): void {
+  if (
+    !sinks.secretMaterial.some(
+      (row) => row.key === item.key && row.composeServiceName === composeServiceName
+    )
+  ) {
+    sinks.secretMaterial.push({
+      key: item.key,
+      composeServiceName,
+      forBuild: false,
+      forRuntime: false,
+      isLiteral: false,
+      valueEnvelope: item.envelope,
+    })
+  }
+  // Recorded on the deployment (key names only) so a reboot can ask for the value again.
+  if (
+    !sinks.secretRefs.some(
+      (ref) => ref.key === item.key && ref.composeServiceName === composeServiceName
+    )
+  ) {
+    sinks.secretRefs.push({ composeServiceName, key: item.key })
+  }
+}
+
 /**
  * Inject resolved variables into a merged compose document.
  *
@@ -694,12 +887,6 @@ export function applyVariablesToComposeDocument(
     projectId?: string
     environmentId?: string
     runDir?: string
-    /**
-     * Whether the target daemon lists `deploy-config-files-v1`. Absent reads
-     * false: a content config with a `{$…}` value is then refused, and one
-     * without stays as authored.
-     */
-    configFilesEnabled?: boolean
   }
 ): ApplyVariablesResult | ApplyVariablesError {
   const data = { ...document.data }
@@ -710,11 +897,11 @@ export function applyVariablesToComposeDocument(
   const runtimeAssignments = new Map<string, RuntimeEnvAssignment[]>()
   const buildAssignments = new Map<string, BuildEnvAssignment[]>()
   const unreferencedSecrets = new Map<string, UnreferencedSecret[]>()
+  const containerUnreferenced = new Map<string, UnreferencedSecret[]>()
   const runDir = params.runDir ?? DEFAULT_DEPLOY_RUN_DIR
   const projectId = params.projectId ?? 'preview'
   const environmentId = params.environmentId ?? 'preview'
   const configCtx = newConfigFilesContext({
-    enabled: params.configFilesEnabled === true,
     projectId,
     environmentId,
     runDir,
@@ -745,6 +932,7 @@ export function applyVariablesToComposeDocument(
       buildAssignments: [],
       nativeApp: params.nativeServiceNames?.has(composeServiceName) ?? false,
       unreferencedSecrets: [],
+      containerUnreferenced: [],
       projectId,
       environmentId,
       runDir,
@@ -763,11 +951,25 @@ export function applyVariablesToComposeDocument(
     runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
     buildAssignments.set(composeServiceName, state.buildAssignments)
     unreferencedSecrets.set(composeServiceName, state.unreferencedSecrets)
+    containerUnreferenced.set(composeServiceName, state.containerUnreferenced)
   }
 
   data.services = services
+  const shares = applyShareVolumeVariables(
+    data,
+    shareVariableView(document, params),
+    listComposeServiceNames(document)[0],
+    { secretMaterial, secretRefs: configCtx.secretRefs }
+  )
+  if ('kind' in shares) return shares
   const finishError = finishConfigFiles(configCtx, data)
   if (finishError) return finishError
+  const secretsNotInjected = findSecretsNotInjected(
+    containerUnreferenced,
+    secretMaterial,
+    configCtx.secretRefs,
+    params.nativeServiceNames
+  )
 
   return {
     document: {
@@ -781,10 +983,93 @@ export function applyVariablesToComposeDocument(
     runtimeAssignments,
     buildAssignments,
     unreferencedSecrets,
+    secretsNotInjected,
     configFiles: configCtx.files,
     configSecretRefs: configCtx.secretRefs,
     configWarnings: configCtx.warnings,
+    networkShareCredentials: shares.credentials,
+    networkSharesResolved: shares.resolved,
   }
+}
+
+/**
+ * The secrets no container of the stack received. Run after every injection
+ * step (references, bindings, generated config files, network shares): a key
+ * any container was given, or a config file or share reads, is delivered.
+ * A secret set on a service or its hostname (source `service` or `hosting`) is
+ * that service's own value, so it is delivered only when that same service got
+ * it; a same-named secret reaching another container does not count. A secret
+ * from a wider scope is one secret for every service, delivered once any
+ * container got it.
+ */
+function findSecretsNotInjected(
+  candidates: ReadonlyMap<string, readonly UnreferencedSecret[]>,
+  secretMaterial: readonly DeployVariableMaterial[],
+  configSecretRefs: readonly DeployConfigSecretRef[],
+  nativeServiceNames: ReadonlySet<string> | undefined
+): SecretNotInjected[] {
+  const delivery = collectSecretDelivery(secretMaterial, configSecretRefs, nativeServiceNames)
+  const byKey = new Map<string, SecretNotInjected>()
+  for (const [composeServiceName, secrets] of candidates) {
+    for (const secret of secrets) {
+      if (isSecretDelivered(delivery, composeServiceName, secret)) continue
+      const known = byKey.get(secret.key)
+      if (known) known.composeServiceNames.push(composeServiceName)
+      else byKey.set(secret.key, { ...secret, composeServiceNames: [composeServiceName] })
+    }
+  }
+  return [...byKey.values()]
+}
+
+interface SecretDelivery {
+  /** Keys any container, config file or share got. */
+  readonly anywhere: ReadonlySet<string>
+  /** `service\u0000key` pairs: what each service itself got. */
+  readonly perService: ReadonlySet<string>
+}
+
+function deliveryKey(service: string, key: string): string {
+  return `${service}\u0000${key}`
+}
+
+function collectSecretDelivery(
+  secretMaterial: readonly DeployVariableMaterial[],
+  configSecretRefs: readonly DeployConfigSecretRef[],
+  nativeServiceNames: ReadonlySet<string> | undefined
+): SecretDelivery {
+  const anywhere = new Set<string>()
+  const perService = new Set<string>()
+  for (const ref of configSecretRefs) {
+    anywhere.add(ref.key)
+    perService.add(deliveryKey(ref.composeServiceName, ref.key))
+  }
+  for (const material of secretMaterial) {
+    const service = material.composeServiceName
+    if (service !== null && nativeServiceNames?.has(service)) continue
+    anywhere.add(material.key)
+    if (service !== null) perService.add(deliveryKey(service, material.key))
+  }
+  return { anywhere, perService }
+}
+
+/**
+ * A secret set on the service itself (or its hostnames) is that service's own
+ * value: the same key reaching another container is a different secret, so
+ * only this service counts. A wider scope is one secret for every service,
+ * delivered as soon as any container got it.
+ */
+function isSecretDelivered(
+  delivery: SecretDelivery,
+  composeServiceName: string,
+  secret: UnreferencedSecret
+): boolean {
+  return isServiceOwnedSource(secret.source)
+    ? delivery.perService.has(deliveryKey(composeServiceName, secret.key))
+    : delivery.anywhere.has(secret.key)
+}
+
+function isServiceOwnedSource(source: string | undefined): boolean {
+  return source === 'service' || source === 'hosting'
 }
 
 /** Masked placeholder for secret-backed values in deploy-preview YAML. */

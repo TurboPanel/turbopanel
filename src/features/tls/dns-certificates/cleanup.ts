@@ -1,17 +1,17 @@
 /**
- * What the periodic sweep still does for DNS-validated certificates now that
- * the control plane no longer orders them: remove the challenge records the
- * panel made and still lists, through the DNS provider only. No order is
- * opened, carried on or renewed, no account is made and the certificate
- * authority is never asked anything, on either edition. Certificates already
- * issued stay in the library and keep serving until they expire.
+ * What the periodic sweep does for DNS-validated certificates: remove the
+ * challenge records the panel made and still lists, through the DNS provider
+ * only. The certificate authority is never asked anything here, on either
+ * edition. Certificates already issued stay in the library and keep serving
+ * until they expire.
  *
- * Every listed record is a leftover now, open order or not, because no order
- * will ever be answered again. Records are removed by the id the provider
- * gave, never by name. A row whose records could not all be removed is held
- * for an hour (`RETRY_MS`) before it is tried again.
+ * Every listed record of a row in `managed` is a leftover: an uploaded row the
+ * panel used to order for will never be answered again, and a server-placed
+ * order that has ended does not need its records any more. Records are removed
+ * by the id the provider gave, never by name. A row whose records could not all
+ * be removed is held for an hour (`RETRY_MS`) before it is tried again.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, or, sql } from 'drizzle-orm'
 import { tls } from '../../../db/schema.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
@@ -43,7 +43,19 @@ export type DnsCertCleanupOptions = {
   batch?: number
 }
 
-const managed = and(eq(tls.source, 'upload'), sql`${tls.metadata} #>> '{acme,managedBy}' = 'panel'`)
+/**
+ * The rows whose listed records are leftovers: an uploaded row the panel used to order
+ * (no order will ever be answered again), and a server-placed order whose request has
+ * ended (the daemon asks for removal once; this tick is the net under that one ask).
+ */
+const managed = or(
+  and(eq(tls.source, 'upload'), sql`${tls.metadata} #>> '{acme,managedBy}' = 'panel'`),
+  and(
+    eq(tls.source, 'lets_encrypt'),
+    sql`${tls.metadata} #>> '{acme,managedBy}' = 'server'`,
+    sql`${tls.metadata} #>> '{httpCert,endedAt}' is not null`
+  )
+)
 const hasRecords = sql`jsonb_array_length(case when jsonb_typeof(${tls.metadata} #> '{dnsCert,records}') = 'array' then ${tls.metadata} #> '{dnsCert,records}' else '[]'::jsonb end) > 0`
 const claimEnds = safeTimestamp(sql`${tls.metadata} #>> '{dnsCert,claimUntil}'`)
 

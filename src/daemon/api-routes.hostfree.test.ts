@@ -5,6 +5,13 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secre
 import type { Db } from '../db/connection.ts'
 import { resetGrantProbeCache } from '../db/role-grants.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
+import { sealToRecipient } from '../lib/panel-identity/hpke.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { importEd25519Signer, importX25519Sealer } from '../lib/panel-identity/keys.ts'
+import {
+  FIXTURE_ED25519_SEED,
+  FIXTURE_X25519_SEED,
+} from '../test-fixtures/panel-identity-fixture.ts'
 import { DAEMON_API_PREFIX } from '../app/surfaces.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
@@ -479,9 +486,10 @@ function oversizedBodyStream(byteLength: number): ReadableStream<Uint8Array> {
 
 async function assertStreaming413(response: Response): Promise<void> {
   assertEquals(response.status, 413)
-  const body = (await response.json()) as { ok?: unknown; error?: unknown }
+  const body = (await response.json()) as { ok?: unknown; error?: unknown; code?: unknown }
   assertEquals(body.ok, false)
   assertEquals(body.error, 'request body too large')
+  assertEquals(body.code, 'request_body_too_large')
 }
 
 test('POST /auth/challenge rejects an oversized body without Content-Length', async () => {
@@ -586,13 +594,32 @@ test('readiness names missing grants instead of a bare database-unavailable', as
   assertEquals(text.includes('setting'), false)
 })
 
-const TLS_ISSUED_BODY = JSON.stringify({
-  hostname: 'shop.example.com',
-  certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
-  privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n',
-})
+const TLS_ISSUED_KEY_PEM = '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n'
 
-async function tlsIssuedApp() {
+async function tlsIssuedIdentity(): Promise<PanelIdentity> {
+  return {
+    keyset: 1,
+    current: await importEd25519Signer(FIXTURE_ED25519_SEED),
+    next: null,
+    seal: await importX25519Sealer(FIXTURE_X25519_SEED),
+  }
+}
+
+/** The report body the daemon sends: the key only as an envelope sealed to the panel. */
+async function tlsIssuedBody(identity: PanelIdentity): Promise<string> {
+  return JSON.stringify({
+    hostname: 'shop.example.com',
+    certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    privateKeyEnvelope: await sealToRecipient(
+      identity.seal.publicRaw,
+      identity.seal.kid,
+      identity.current.kid,
+      new TextEncoder().encode(TLS_ISSUED_KEY_PEM)
+    ),
+  })
+}
+
+async function tlsIssuedApp(opts: { withSecrets?: boolean } = {}) {
   const sealing = await deriveEncryptionSecretsConfig(parseTestSecretsConfig(), 'data-encryption')
   const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
   const issued = await issueDaemonJwt(
@@ -601,36 +628,52 @@ async function tlsIssuedApp() {
   )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
-    c.set('dataEncryptionSecrets', sealing)
+    if (opts.withSecrets !== false) c.set('dataEncryptionSecrets', sealing)
     return next()
   })
-  registerDaemonApiRoutes(app, { secrets: keyring })
-  return { app, token: issued.token }
+  const identity = await tlsIssuedIdentity()
+  registerDaemonApiRoutes(app, { secrets: keyring, panelIdentity: () => Promise.resolve(identity) })
+  return { app, token: issued.token, body: await tlsIssuedBody(identity) }
 }
 
 test('POST /tls/issued needs a daemon token', async () => {
-  const { app } = await tlsIssuedApp()
+  const { app, body } = await tlsIssuedApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: TLS_ISSUED_BODY,
+    body,
   })
   assertEquals(response.status, 401)
 })
 
 test('POST /tls/issued fails closed without a database or sealing secrets', async () => {
-  const { app, token } = await jwtDaemonApp()
+  const { app, token, body } = await tlsIssuedApp({ withSecrets: false })
   const response = await app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: TLS_ISSUED_BODY,
+    body,
   })
   assertEquals(response.status, 503)
-  const body = (await response.json()) as { error?: unknown }
-  assertEquals(body.error, 'storage unavailable')
+  const answer = (await response.json()) as { error?: unknown }
+  assertEquals(answer.error, 'storage unavailable')
+})
+
+test('POST /tls/issued refuses a plain privateKeyPem and a report with no envelope', async () => {
+  const { app, token, body } = await tlsIssuedApp()
+  const post = (payload: unknown) =>
+    app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  const { privateKeyEnvelope: _sealed, ...withoutKey } = JSON.parse(body)
+  const plain = await post({ ...withoutKey, privateKeyPem: TLS_ISSUED_KEY_PEM })
+  assertEquals(plain.status, 400)
+  assertEquals((await plain.text()).includes('PRIVATE KEY'), false)
+  assertEquals((await post(withoutKey)).status, 400)
 })
 
 test('POST /tls/issued rejects bad JSON, missing fields and an oversized body, and never echoes the body', async () => {
@@ -665,12 +708,12 @@ test('POST /tls/issued rejects bad JSON, missing fields and an oversized body, a
 })
 
 test('POST /tls/issued rejects a requestId that is not 1 to 64 plain characters', async () => {
-  const { app, token } = await tlsIssuedApp()
+  const { app, token, body } = await tlsIssuedApp()
   const post = (requestId: unknown) =>
     app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ ...JSON.parse(TLS_ISSUED_BODY), requestId }),
+      body: JSON.stringify({ ...JSON.parse(body), requestId }),
     })
   for (const bad of ['', 'x'.repeat(65), 'has space', 'a/b', 12, null, ['a']]) {
     const response = await post(bad)

@@ -19,6 +19,21 @@ import { DEFAULT_MANAGED_PROMOTE_STALE_MS } from './promote-lag.ts'
 /** How far ahead of now a daemon timestamp may be before it is not trusted (clock skew). */
 export const REPLICA_HEALTH_MAX_FUTURE_SKEW_MS = 2 * 60_000
 
+/**
+ * The daemon pushes a health report every 30 s, but an unchanged reading is
+ * only written again once the stored one is this old (see
+ * `updateManagedMemberDisplayReplication`).
+ */
+export const REPLICA_DISPLAY_REFRESH_MS = 5 * 60_000
+
+/**
+ * Freshness window for a pushed (display-only) reading. It must stay well
+ * above {@link REPLICA_DISPLAY_REFRESH_MS}: a healthy replica whose reading is
+ * rewritten every five minutes would otherwise flip to `unknown` in between.
+ * Probe-measured readings keep the shorter promote-gate window.
+ */
+export const REPLICA_DISPLAY_STALE_MS = 2 * REPLICA_DISPLAY_REFRESH_MS
+
 /** Readings that say the replica was keeping up; only these can go out of date into `unknown`. */
 const POSITIVE_STATES: ReadonlySet<string> = new Set(['streaming', 'catching_up', 'catchup'])
 

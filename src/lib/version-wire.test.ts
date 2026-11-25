@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
   CLIENT_VERSION_HEADER,
+  COMPOSE_CHECKOUT_FEATURE,
+  COMMAND_RECOVERY_V2_FEATURE,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
   TUNNEL_CONNECTOR_FEATURE,
@@ -18,10 +20,13 @@ import {
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
-  DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
+  BUILD_LIMITS_FEATURE,
+  HOSTING_NAME_TLS_FEATURE,
+  TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
+  DAEMON_UPDATE_REQUIRED_CODE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
@@ -44,13 +49,13 @@ import {
   HOSTING_VIA_HEADER_FEATURE,
   parseSemver,
   PHP_SITE_MODES_FEATURE,
-  resolveDaemonCapabilities,
   resolveDaemonSupport,
   resolveInstanceCapabilities,
   MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE,
   BACKUP_S3_COPY_FEATURE,
   DEPLOY_HOSTINGS_ONLY_FEATURE,
   TLS_CAPTURE_FEATURE,
+  ACME_ISSUE_DNS_FEATURE,
   ACME_ISSUE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
   INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
@@ -105,31 +110,62 @@ test('compareSemver follows semver precedence, pre-releases before their release
   assertEquals(cmp('0.1.0+a', '0.1.0+b'), 0)
 })
 
-test('resolveDaemonSupport: at or above the floor is supported, below is unsupported, absent is unknown', () => {
-  assertEquals(resolveDaemonSupport('0.1.18'), {
+test('resolveDaemonSupport: needs a parsable version at or above the floor and every wire feature', () => {
+  const all = [...DAEMON_WIRE_FEATURES]
+  assertEquals(resolveDaemonSupport('0.1.18', all), {
     status: 'supported',
     version: '0.1.18',
     minVersion: MIN_SUPPORTED_DAEMON_VERSION,
+    missingFeatures: [],
   })
-  assertEquals(resolveDaemonSupport('0.4.2').status, 'supported')
-  assertEquals(resolveDaemonSupport('0.1.18-rc.1').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.1.17').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.1.0').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.0.9').status, 'unsupported')
-  assertEquals(resolveDaemonSupport(undefined), {
-    status: 'unknown',
-    version: null,
-    minVersion: MIN_SUPPORTED_DAEMON_VERSION,
-  })
-  assertEquals(resolveDaemonSupport('unstamped').status, 'unknown')
-  assertEquals(resolveDaemonSupport('0.0.1', '0.0.1').status, 'supported')
+  assertEquals(resolveDaemonSupport('0.4.2', all).status, 'supported')
+  assertEquals(resolveDaemonSupport('0.1.18-rc.1', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.1.17', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.0.9', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.0.1', all, '0.0.1').status, 'supported')
+  // Fail closed: no version, an unparsable one.
+  for (const version of [undefined, null, '', 'unstamped']) {
+    const refused = resolveDaemonSupport(version, all)
+    assertEquals(refused.status, 'unsupported')
+    assertEquals(refused.version, null)
+    assertEquals(refused.code, DAEMON_UPDATE_REQUIRED_CODE)
+  }
 })
 
-test('daemonUnsupportedReason names both numbers and the fix', () => {
+test('resolveDaemonSupport names every missing feature, and no stored list means all are missing', () => {
+  const lacking = DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1')
+  const one = resolveDaemonSupport('0.4.2', lacking)
+  assertEquals(one.status, 'unsupported')
+  assertEquals(one.code, 'daemon_update_required')
+  assertEquals(one.missingFeatures, ['build-limits-v1'])
   assertEquals(
-    daemonUnsupportedReason(resolveDaemonSupport('0.0.9')),
-    'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+    one.reason,
+    'daemon_update_required: daemon does not list 1 required feature: build-limits-v1 — update the daemon'
   )
+  // A name the control plane does not know is ignored, not required.
+  assertEquals(
+    resolveDaemonSupport('0.4.2', [...DAEMON_WIRE_FEATURES, 'future-v9']).status,
+    'supported'
+  )
+  for (const none of [undefined, null, []]) {
+    assertEquals(resolveDaemonSupport('0.4.2', none).missingFeatures, [...DAEMON_WIRE_FEATURES])
+  }
+})
+
+test('daemonUnsupportedReason names the code, the numbers, a capped feature list and the fix', () => {
+  assertEquals(
+    daemonUnsupportedReason(resolveDaemonSupport('0.0.9', DAEMON_WIRE_FEATURES)),
+    'daemon_update_required: daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+  )
+  const bare = daemonUnsupportedReason(resolveDaemonSupport(undefined, []))
+  const total = DAEMON_WIRE_FEATURES.length
+  assertEquals(
+    bare.startsWith(
+      `daemon_update_required: daemon reports no usable version and does not list ${total} required features: `
+    ),
+    true
+  )
+  assertEquals(bare.endsWith(` and ${total - 8} more — update the daemon`), true)
 })
 
 test('the floor is a semver no newer than this instance', () => {
@@ -145,32 +181,23 @@ test('header names are lower-case, as Hono and fetch normalize them', () => {
   assertEquals(CLIENT_VERSION_HEADER, CLIENT_VERSION_HEADER.toLowerCase())
 })
 
-const CERT_SOURCES = 'instance-cert-sources-per-hostname'
-
 test('the daemon floor pin is the documented 0.1.18 cutoff', () => {
   // Changing the constant requires the Versions-on-the-wires note in src/app/AGENTS.md and turbopaneld/src/instance/AGENTS.md (Versions on the wires).
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('resolveDaemonCapabilities closes on an unknown peer and opens at the feature floor', () => {
-  assertEquals(resolveDaemonCapabilities('0.1.1')[CERT_SOURCES], true)
-  assertEquals(resolveDaemonCapabilities('0.1.0')[CERT_SOURCES], false)
-  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
-  assertEquals(resolveDaemonCapabilities('unstamped')[CERT_SOURCES], false)
-  assertEquals(DAEMON_FEATURE_MIN_VERSIONS[CERT_SOURCES], '0.1.1')
+test('resolveInstanceCapabilities closes on an unknown peer and opens at the feature floor', () => {
   assertEquals(resolveInstanceCapabilities('0.1.1', { demo: '0.1.1' }).demo, true)
   assertEquals(resolveInstanceCapabilities(null, { demo: '0.1.1' }).demo, false)
 })
 
 test('an old daemon is unsupported while the resolver itself does not disconnect', () => {
   // Dispatch refusal lives in the command consumer (consumer.test.ts): the
-  // socket stays up. This resolver only classifies. An unknown version still
-  // passes the floor and stays closed for capability gates.
-  const support = resolveDaemonSupport('0.0.9')
+  // socket stays up. This resolver only classifies. An unknown version is
+  // refused too, and stays closed for capability gates.
+  const support = resolveDaemonSupport('0.0.9', DAEMON_WIRE_FEATURES)
   assertEquals(support.status, 'unsupported')
-  assertEquals(resolveDaemonCapabilities('0.0.9')[CERT_SOURCES], false)
-  assertEquals(resolveDaemonSupport(undefined).status, 'unknown')
-  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
+  assertEquals(resolveDaemonSupport(undefined, DAEMON_WIRE_FEATURES).status, 'unsupported')
 })
 
 test('managed-health-report-v1 is advertised to daemons, so they push health reports', () => {
@@ -274,6 +301,12 @@ test('command-recovery-v1 is an advertised wire feature and raised no floor', ()
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
+test('command-recovery-v2 is an advertised wire feature and raised no floor', () => {
+  assertEquals(COMMAND_RECOVERY_V2_FEATURE, 'command-recovery-v2')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(COMMAND_RECOVERY_V2_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
 test('managed-switchover-final-position-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE, 'managed-switchover-final-position-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE), true)
@@ -350,6 +383,17 @@ test('backup-s3-copy-v1 is advertised and raised no floor', () => {
 test('deploy-hostings-only-v1 is advertised and raised no floor', () => {
   assertEquals(DEPLOY_HOSTINGS_ONLY_FEATURE, 'deploy-hostings-only-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(DEPLOY_HOSTINGS_ONLY_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('compose-checkout-v1 is advertised and raised no floor', () => {
+  assertEquals(COMPOSE_CHECKOUT_FEATURE, 'compose-checkout-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(COMPOSE_CHECKOUT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('network-shares-v1 is advertised and raised no floor', () => {
+  assertEquals(DAEMON_WIRE_FEATURES.includes('network-shares-v1'), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
@@ -457,8 +501,32 @@ test('project-cache-v1 is advertised', () => {
   assertEquals(DAEMON_WIRE_FEATURES.includes(PROJECT_CACHE_FEATURE), true)
 })
 
-test('tunnel-lock-add-v1 is the last daemon wire feature and raised no floor', () => {
+test('tunnel-lock-add-v1 is advertised and raised no floor', () => {
   assertEquals(TUNNEL_LOCK_ADD_FEATURE, 'tunnel-lock-add-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TUNNEL_LOCK_ADD_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_LOCK_ADD_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('build-limits-v1 is a daemon wire feature and raised no floor', () => {
+  assertEquals(BUILD_LIMITS_FEATURE, 'build-limits-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(BUILD_LIMITS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('tunnel-peer-mtls-v1 is a daemon wire feature and raised no floor', () => {
+  assertEquals(TUNNEL_PEER_MTLS_FEATURE, 'tunnel-peer-mtls-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_PEER_MTLS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('hosting-name-tls-v1 is an advertised daemon wire feature and raised no floor', () => {
+  assertEquals(HOSTING_NAME_TLS_FEATURE, 'hosting-name-tls-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOSTING_NAME_TLS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('acme-issue-dns-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(ACME_ISSUE_DNS_FEATURE, 'acme-issue-dns-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(ACME_ISSUE_DNS_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

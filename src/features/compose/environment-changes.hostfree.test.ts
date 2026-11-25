@@ -13,6 +13,7 @@ import {
 } from './layer-chain.ts'
 import { mergeComposeLayers } from './layers.ts'
 import { makeComposeTag } from './tags.ts'
+import { undefinedResourceIssues } from './undefined-resources.ts'
 import { type ComposeDocument, emptyComposeDocument } from './types.ts'
 import { validateComposeDocument } from './validate.ts'
 import { validateComposeForDeploy } from './validate-for-deploy.ts'
@@ -351,4 +352,115 @@ test('a document that is not a partial layer is held to the full rules', () => {
   })
   assert(!strict.ok)
   assertStringIncludes(strict.issues[0]!.message, 'nodeVersion is only valid')
+})
+
+const QBIT_BASE = {
+  compose: doc({
+    services: {
+      qbittorrent: {
+        image: 'lscr.io/linuxserver/qbittorrent',
+        volumes: ['qbittorrent-config:/config'],
+      },
+    },
+  }),
+}
+
+test('a save that drops a top-level volume a service still mounts is refused', () => {
+  // The Base only names the service; the volume was declared by the environment's changes.
+  const stored = { compose: doc({ volumes: { 'qbittorrent-config': null, pia: null } }) }
+  assertEquals(saveIssues(QBIT_BASE, stored), [])
+
+  // The editor showed the other volumes only; saving what it showed drops the declaration.
+  const resaved = { compose: doc({ volumes: { pia: null, downloads: null } }) }
+  const issues = saveIssues(QBIT_BASE, resaved)
+  assertEquals(issues.length, 1)
+  assertStringIncludes(issues[0]!.message, 'volume "qbittorrent-config"')
+  assertStringIncludes(issues[0]!.message, 'Service "qbittorrent"')
+})
+
+test('a volume the Base declares satisfies the service, and a bind mount needs none', () => {
+  const project = {
+    compose: doc({
+      services: {
+        qbittorrent: {
+          image: 'x',
+          volumes: ['qbittorrent-config:/config', './data:/data', '/srv:/srv', '/anon'],
+        },
+      },
+      volumes: { 'qbittorrent-config': null },
+    }),
+  }
+  const env = { compose: doc({ services: { qbittorrent: { image: 'y' } } }) }
+  assertEquals(saveIssues(project, env), [])
+})
+
+test('an undefined network, secret or config is refused the same way', () => {
+  const project = {
+    compose: doc({
+      services: {
+        web: { image: 'x', networks: ['back'], secrets: ['tok'], configs: [{ source: 'cfg' }] },
+      },
+    }),
+  }
+  const messages = saveIssues(project, { compose: doc({}) }).map((i) => i.message)
+  assertEquals(messages.length, 3)
+  assert(messages.some((m) => m.includes('network "back"')))
+  assert(messages.some((m) => m.includes('secret "tok"')))
+  assert(messages.some((m) => m.includes('config "cfg"')))
+})
+
+function svc(volumes: unknown[], extra: Record<string, unknown> = {}) {
+  return { compose: doc({ services: { web: { image: 'x', volumes, ...extra } } }) }
+}
+const NONE = { compose: doc({}) }
+
+test('an interpolated volume source is not checked, and its colon is not a separator', () => {
+  const project = svc([
+    '${DATA_DIR}:/data',
+    '{$DATA}:/data',
+    '${X:-./d}:/d',
+    '${Y:-named}:/n',
+    { type: 'volume', source: '${DATA_DIR}', target: '/l' },
+  ])
+  assertEquals(saveIssues(project, NONE), [])
+})
+
+test('a long-syntax volume needs its declaration, a bind or tmpfs mount does not', () => {
+  const project = svc([
+    { type: 'volume', source: 'cfg', target: '/c' },
+    { type: 'bind', source: 'cfg2', target: '/b' },
+    { type: 'tmpfs', target: '/t' },
+  ])
+  const issues = saveIssues(project, NONE)
+  assertEquals(issues.length, 1)
+  assertStringIncludes(issues[0]!.message, 'volume "cfg"')
+})
+
+test('network_mode means the service joins no declared network', () => {
+  const data = { services: { web: { image: 'x', network_mode: 'host', networks: ['back'] } } }
+  assertEquals(undefinedResourceIssues(data), [])
+})
+
+test('an external volume is declared by its key', () => {
+  const project = {
+    compose: doc({
+      services: { web: { image: 'x', volumes: ['shared:/s'] } },
+      volumes: { shared: { external: true } },
+    }),
+  }
+  assertEquals(saveIssues(project, NONE), [])
+})
+
+test('a !reset of the volumes mapping removes the declaration and is refused', () => {
+  const project = {
+    compose: doc({
+      services: { web: { image: 'x', volumes: ['shared:/s'] } },
+      volumes: { shared: null },
+    }),
+  }
+  const env = { compose: doc({ volumes: makeComposeTag('reset', null) }) }
+  const issues = saveIssues(project, env)
+  assertEquals(issues.length, 1)
+  assertStringIncludes(issues[0]!.message, 'volume "shared"')
+  assertStringIncludes(issues[0]!.message, 'does not declare')
 })

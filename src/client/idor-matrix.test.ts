@@ -21,11 +21,11 @@
  * Skips without TURBOPANEL_DATABASE_URL (like the other real-database suites).
  */
 
-import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
+import { loadStoragePins } from '../features/schedule/plan-deploy.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import {
@@ -54,6 +54,7 @@ import {
   organization,
   principal,
   project,
+  replica,
   repository,
   retention,
   secret,
@@ -69,11 +70,17 @@ import {
   variable,
   workspace,
 } from '../db/schema.ts'
+import { postgresEngineSpec } from '../features/managed/postgres.ts'
+import { encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { forEachSequential } from '../lib/sequential.ts'
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
+import { listEnvironmentDataVolumes } from './environments/data-volumes.ts'
+import { loadStorageMaterial } from './environments/deploy-prepare.ts'
+import { isDockerVolumeNameRefusal } from './environments/deploy-storage-volume-name.ts'
 import { ORG_ID_HEADER } from './org-context.ts'
 import { registerClientRoutes } from './routes.ts'
 
@@ -121,6 +128,26 @@ type Fixture = {
 async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
   const rows = await promise
   return rows[0]!.id
+}
+
+async function insertUserLogin(
+  db: Db,
+  managedId: string,
+  principalId: string,
+  username: string
+): Promise<void> {
+  await db.insert(login).values({
+    recipe: 'app',
+    managedId,
+    principalId,
+    password: await encryptSecret(
+      await deriveEncryptionSecretsConfig(parseTestSecretsConfig('deno'), 'data-encryption'),
+      'idor-login-secret'
+    ),
+    role: 'user',
+    username,
+    appliedUsername: username,
+  })
 }
 
 async function seedOrganizationB(
@@ -294,7 +321,11 @@ async function seedOrganizationB(
   ids.managedId = await insertId(
     db
       .insert(managed)
-      .values({ environmentId: ids.environmentId, engine: 'postgres' })
+      .values({
+        environmentId: ids.environmentId,
+        engine: 'postgres',
+        options: { settings: postgresEngineSpec.defaultSettings },
+      })
       .returning({ id: managed.id })
   )
   ids.policyId = await insertId(
@@ -335,15 +366,29 @@ async function seedOrganizationB(
       })
       .returning({ id: principal.id })
   )
+  ids.databaseName = n('db').replaceAll('-', '_').replace(/^\d/, 'x')
   const databaseId = await insertId(
     db
       .insert(managedDatabase)
-      .values({
-        managedId: ids.managedId,
-        name: n('db').replaceAll('-', '_').replace(/^\d/, 'x'),
-      })
+      .values({ managedId: ids.managedId, name: ids.databaseName })
       .returning({ id: managedDatabase.id })
   )
+  // A site owner's account with one user login on the cluster, for bindings
+  // that name the login by its principal.
+  ids.loginPrincipalId = await insertId(
+    db
+      .insert(principal)
+      .values({ organizationId: orgB, username: n('lp'), appliedUsername: n('lp') })
+      .returning({ id: principal.id })
+  )
+  await insertUserLogin(db, ids.managedId, ids.loginPrincipalId, n('lp'))
+  await db.insert(replica).values({
+    managedId: ids.managedId,
+    serverId: ids.serverId,
+    role: 'primary',
+    isReadEligible: false,
+    ordinal: 1,
+  })
   const loginId = await insertId(
     db
       .insert(login)
@@ -701,6 +746,20 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
   Object.assign(aOwn, await seedBodyTargetsA(db, orgA, nonce))
   const b = await seedOrganizationB(db, orgB, ownerB, nonce)
   const aFull = await seedOrganizationB(db, orgA, ownerA, `a2-${nonce}`)
+  // B's site owner has a user login on two B clusters, so a lookup by principal alone is ambiguous.
+  const secondEnvironmentId = await insertId(
+    db
+      .insert(environment)
+      .values({ projectId: b.projectId!, name: `idor-${nonce}-env2`, serverId: b.serverId! })
+      .returning({ id: environment.id })
+  )
+  const secondManagedId = await insertId(
+    db
+      .insert(managed)
+      .values({ environmentId: secondEnvironmentId, engine: 'postgres' })
+      .returning({ id: managed.id })
+  )
+  await insertUserLogin(db, secondManagedId, b.loginPrincipalId!, `idor-${nonce}-lp2`)
   // The body-id positive controls take A's ids from aOwn: give it the full set too.
   for (const [key, value] of Object.entries(aFull)) aOwn[key] ??= value
   aOwn.fullStorageId = aFull.storageId!
@@ -886,6 +945,17 @@ const BODY_ID_CASES: Record<string, BodyCase> = {
       secretId: ref.secretId,
     }),
   },
+  'POST /bindings login.principalId': {
+    method: 'POST',
+    path: () => '/api/client/v1/bindings',
+    body: (own, ref) => ({
+      principalId: ref.loginPrincipalId,
+      serviceId: own.serviceId,
+      databaseName: own.databaseName,
+      keyPrefix: 'IDORPRINCIPAL',
+      preset: null,
+    }),
+  },
 }
 
 async function sendJson(
@@ -906,6 +976,165 @@ async function sendJson(
   })
   return { status: response.status, text: await response.text() }
 }
+
+test('body ids: a foreign principal on /bindings leaks none of its ids', async () => {
+  await withFixture(async (fixture) => {
+    const foreign = await sendJson(fixture, 'POST', '/api/client/v1/bindings', {
+      principalId: fixture.b.loginPrincipalId,
+      serviceId: fixture.aOwn.serviceId,
+      databaseName: fixture.aOwn.databaseName,
+    })
+    const unknown = await sendJson(fixture, 'POST', '/api/client/v1/bindings', {
+      principalId: crypto.randomUUID(),
+      serviceId: fixture.aOwn.serviceId,
+      databaseName: fixture.aOwn.databaseName,
+    })
+    assertEquals(foreign.status, 404, foreign.text)
+    assertEquals(foreign, unknown)
+    assert(!foreign.text.includes(fixture.b.managedId!), foreign.text)
+    assert(!foreign.text.includes('binding_login_ambiguous'), foreign.text)
+  })
+})
+
+test('GET /access/check answers another organization like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const check = async (resourceId: string) => {
+      const response = await fixture.app.request(
+        `/api/client/v1/access/check?resourceId=${resourceId}&permissionKey=organization:own`,
+        { headers: { cookie: fixture.cookieA, [ORG_ID_HEADER]: fixture.orgA } }
+      )
+      return { status: response.status, body: await response.text() }
+    }
+    const unknown = await check(crypto.randomUUID())
+    assertEquals(unknown.status, 404)
+    for (const resourceId of [fixture.b.projectId!, fixture.b.serviceId!, fixture.orgB]) {
+      assertEquals(await check(resourceId), unknown)
+    }
+    const own = await check(fixture.aOwn.projectId)
+    assertEquals(own.status, 200, own.body)
+  })
+})
+
+test('GET and POST /access answer a foreign org or team like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const headers = {
+      cookie: fixture.cookieA,
+      [ORG_ID_HEADER]: fixture.orgA,
+      'content-type': 'application/json',
+    }
+    const list = async (resourceId: string) => {
+      const response = await fixture.app.request(`/api/client/v1/access?resourceId=${resourceId}`, {
+        headers,
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const createFor = async (
+      resourceId: string,
+      subjectKind: string = 'user',
+      subjectId: string = fixture.aOwn.userId
+    ) => {
+      const response = await fixture.app.request('/api/client/v1/access', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          subjectKind,
+          subjectId,
+          resourceId,
+          effect: 'allow',
+          permissionKey: 'organization:manage',
+        }),
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const create = (resourceId: string) => createFor(resourceId)
+    const unknownId = crypto.randomUUID()
+    for (const call of [list, create]) {
+      const unknown = await call(unknownId)
+      assertEquals(unknown.status, 404)
+      for (const resourceId of [fixture.orgB, fixture.b.teamId!]) {
+        assertEquals(await call(resourceId), unknown)
+      }
+    }
+    const own = await list(fixture.orgA)
+    assertEquals(own.status, 200, own.body)
+    const created = await createFor(fixture.orgA)
+    assert(
+      created.status >= 200 && created.status < 300,
+      `own create: ${created.status} ${created.body}`
+    )
+  })
+})
+
+test('POST /access answers a foreign subject id like an unknown one', async () => {
+  await withFixture(async (fixture) => {
+    const headers = {
+      cookie: fixture.cookieA,
+      [ORG_ID_HEADER]: fixture.orgA,
+      'content-type': 'application/json',
+    }
+    const create = async (subjectKind: string, subjectId: string) => {
+      const response = await fixture.app.request('/api/client/v1/access', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          subjectKind,
+          subjectId,
+          resourceId: fixture.orgA,
+          effect: 'allow',
+          permissionKey: 'organization:manage',
+        }),
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    for (const [subjectKind, foreignId] of [
+      ['team', fixture.b.teamId!],
+      ['organization', fixture.orgB],
+    ] as const) {
+      const unknown = await create(subjectKind, crypto.randomUUID())
+      assertEquals(unknown.status, 404)
+      assertEquals(await create(subjectKind, foreignId), unknown)
+    }
+    const own = await create('organization', fixture.orgA)
+    assert(own.status >= 200 && own.status < 300, `own subject: ${own.status} ${own.body}`)
+  })
+})
+
+test('DELETE /access/:id answers a foreign grant like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const remove = async (grantId: string) => {
+      const response = await fixture.app.request(`/api/client/v1/access/${grantId}`, {
+        method: 'DELETE',
+        headers: { cookie: fixture.cookieA, [ORG_ID_HEADER]: fixture.orgA },
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const [foreignGrant] = await fixture.db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(eq(grant.entityId, fixture.orgB))
+      .limit(1)
+    const unknown = await remove(crypto.randomUUID())
+    assertEquals(unknown.status, 404)
+    assertEquals(await remove(foreignGrant!.id), unknown)
+    const survivors = await fixture.db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(eq(grant.id, foreignGrant!.id))
+    assertEquals(survivors.length, 1)
+    const [ownGrant] = await fixture.db
+      .insert(grant)
+      .values({
+        entityType: 'organization',
+        entityId: fixture.orgA,
+        actorType: 'user',
+        actorId: fixture.aOwn.userId,
+        permission: 'organization:manage',
+      })
+      .returning({ id: grant.id })
+    const own = await remove(ownGrant!.id)
+    assertEquals(own.status, 200, own.body)
+  })
+})
 
 for (const [name, entry] of Object.entries(BODY_ID_CASES)) {
   test(`body ids: ${name} refuses B's id and accepts A's own`, async () => {
@@ -1085,5 +1314,137 @@ test('parameterised writes on A’s own objects never act on or reveal B through
     const reachedCount = reached.reduce((sum, [, count]) => sum + count, 0)
     assert(reachedCount > 0, `no write reached past validation: ${JSON.stringify([...statuses])}`)
     assertEquals(failures, [], failures.join('\n'))
+  })
+})
+
+const STORAGE_PARENT_CASES = [
+  { field: 'environmentId', own: (ids: Ids) => ids.environmentId! },
+  { field: 'serviceId', own: (ids: Ids) => ids.serviceId! },
+  { field: 'projectId', own: (ids: Ids) => ids.projectId! },
+  { field: 'workspaceId', own: (ids: Ids) => ids.workspaceId! },
+] as const
+
+for (const { field, own } of STORAGE_PARENT_CASES) {
+  test(`POST /storage ${field}: a user managing A and B cannot attach A's storage to B's parent`, async () => {
+    await withFixture(async (fixture) => {
+      const { db, orgA, orgB, nonce } = fixture
+      // The caller owns both organizations; only the active organization (A) may decide.
+      const [ownerGrant] = await db
+        .select({ actorId: grant.actorId })
+        .from(grant)
+        .where(and(eq(grant.entityId, orgA), eq(grant.permission, 'organization:own')))
+        .limit(1)
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: orgB,
+        actorType: 'user',
+        actorId: ownerGrant!.actorId,
+        permission: 'organization:own',
+      })
+
+      const foreignName = `idor-parent-${nonce}-${field}-foreign`
+      const foreign = await sendJson(fixture, 'POST', '/api/client/v1/storage', {
+        kind: 'volume',
+        name: foreignName,
+        [field]: fixture.b[field],
+      })
+      assertEquals(foreign.status, 404, `foreign parent: ${foreign.text}`)
+      const created = await db
+        .select({ id: storage.id })
+        .from(storage)
+        .where(eq(storage.name, foreignName))
+      assertEquals(created.length, 0)
+
+      const ownName = `idor-parent-${nonce}-${field}-own`
+      const positive = await sendJson(fixture, 'POST', '/api/client/v1/storage', {
+        kind: 'volume',
+        name: ownName,
+        [field]: own(fixture.aFull),
+      })
+      assertEquals(positive.status, 200, `own parent: ${positive.text}`)
+    })
+  })
+}
+
+/** A's volume attached to B's environment, as the foreign-parent create bug left it. */
+async function seedStrayVolumeOnB(fixture: Fixture): Promise<string> {
+  const { db, orgA, nonce } = fixture
+  const stray = await insertId(
+    db
+      .insert(storage)
+      .values({
+        organizationId: orgA,
+        environmentId: fixture.b.environmentId!,
+        kind: 'volume',
+        name: `idor-a-${nonce}-stray`,
+      })
+      .returning({ id: storage.id })
+  )
+  await db
+    .insert(storageCopy)
+    .values({ storageId: stray, serverId: fixture.aOwn.serverId, provider: 'docker' })
+  await db
+    .insert(mount)
+    .values({ storageId: stray, serviceId: fixture.b.serviceId!, destinationPath: '/stray' })
+  return stray
+}
+
+test('deploy planning ignores storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB } = fixture
+    // Only the stray row pins the service, so the result does not depend on row order.
+    await db.delete(mount).where(eq(mount.serviceId, fixture.b.serviceId!))
+    await seedStrayVolumeOnB(fixture)
+
+    const asB = await loadStoragePins(db, orgB, fixture.b.environmentId!)
+    assertEquals(asB.get(fixture.b.serviceId!), undefined)
+    // Control: the same row is picked up when the organization matches.
+    const asA = await loadStoragePins(db, orgA, fixture.b.environmentId!)
+    assertEquals(asA.get(fixture.b.serviceId!), fixture.aOwn.serverId)
+  })
+})
+
+test('deploy storage material ignores storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB } = fixture
+    const stray = await seedStrayVolumeOnB(fixture)
+    const load = async (organizationId: string) => {
+      const material = await loadStorageMaterial(db, {
+        environmentId: fixture.b.environmentId!,
+        projectId: fixture.b.projectId!,
+        organizationId,
+        serverId: fixture.aOwn.serverId,
+        serviceIds: [fixture.b.serviceId!],
+        cloneNamesByServiceId: new Map(),
+        registeredVolumes: [],
+      })
+      assert(!isDockerVolumeNameRefusal(material))
+      return material
+    }
+
+    const asB = await load(orgB)
+    assertEquals(
+      asB.some((entry) => entry.storageId === stray),
+      false
+    )
+    const asA = await load(orgA)
+    assertEquals(
+      asA.some((entry) => entry.storageId === stray),
+      true
+    )
+  })
+})
+
+test('environment data volumes ignore storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB } = fixture
+    const stray = await seedStrayVolumeOnB(fixture)
+    const listed = async (organizationId: string) => {
+      const result = await listEnvironmentDataVolumes(db, organizationId, fixture.b.environmentId!)
+      return [...result.volumes, ...result.kept].map((volume) => volume.storageId)
+    }
+
+    assertEquals((await listed(orgB)).includes(stray), false)
+    assertEquals((await listed(orgA)).includes(stray), true)
   })
 })

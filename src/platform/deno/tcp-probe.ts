@@ -31,6 +31,7 @@ function closeQuietly(conn: { close: () => void }): void {
 export function createDenoTcpProbe(connect: DenoConnect = Deno.connect): TcpProbe {
   return {
     canReachPrivate: true,
+    localAddresses: () => Deno.networkInterfaces().map((nic) => nic.address),
     connect: (target: TcpProbeTarget, timeoutMs: number) => {
       const started = Date.now()
       let timer: ReturnType<typeof setTimeout> | undefined

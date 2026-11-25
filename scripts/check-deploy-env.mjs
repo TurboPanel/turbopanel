@@ -54,7 +54,11 @@ export function readHyperdriveIdForEnv(envName, wranglerPath = path.join(ROOT, '
   }
   return {
     id: binding.id,
-    accountId: env.vars?.CLOUDFLARE_ACCOUNT_ID ?? config.vars?.CLOUDFLARE_ACCOUNT_ID,
+    accountId:
+      env.account_id ??
+      env.vars?.CLOUDFLARE_ACCOUNT_ID ??
+      config.account_id ??
+      config.vars?.CLOUDFLARE_ACCOUNT_ID,
   }
 }
 
@@ -76,14 +80,19 @@ async function readOriginFromApi(accountId, id) {
   return body.result?.origin ?? null
 }
 
-function readOriginFromWrangler(id) {
+/** Child environment for wrangler: pinned to the env's account when known. */
+export function wranglerChildEnv(accountId, base = process.env) {
+  return accountId ? { ...base, CLOUDFLARE_ACCOUNT_ID: accountId } : base
+}
+
+function readOriginFromWrangler(id, accountId) {
   const wrangler = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
   let output
   try {
     output = execFileSync(process.execPath, [wrangler, 'hyperdrive', 'get', id], {
       cwd: ROOT,
       encoding: 'utf8',
-      env: process.env,
+      env: wranglerChildEnv(accountId),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch {
@@ -132,7 +141,7 @@ export async function assertMigrateTargetMatchesEnv(env = process.env) {
       `CLOUDFLARE_ENV=${envName} needs a TCP TURBOPANEL_DATABASE_URL to check against the Hyperdrive origin`
     )
   const { id, accountId } = readHyperdriveIdForEnv(envName)
-  const origin = (await readOriginFromApi(accountId, id)) ?? readOriginFromWrangler(id)
+  const origin = (await readOriginFromApi(accountId, id)) ?? readOriginFromWrangler(id, accountId)
   if (!origin?.host || !origin?.database || !origin?.user) {
     throw new Error(
       `Hyperdrive ${id} (env ${envName}) has no readable origin — refusing to migrate blind`

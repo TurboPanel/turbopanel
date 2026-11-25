@@ -80,6 +80,10 @@ test('volume target is /var/lib/postgresql parent', () => {
   assertEquals(spec.volumes.length, 1)
   assertEquals(spec.volumes[0]?.target, '/var/lib/postgresql')
   assertEquals(spec.volumes[0]?.name, 'managed_11111111_1111_1111_1111_111111111111_data')
+  assertEquals(
+    (spec.service.volumes as string[])[0],
+    `${spec.volumes[0]?.name}:/var/lib/postgresql:rw`
+  )
 })
 
 test('volume name is hyphen-free for SAFE_IDENTIFIER_RE', () => {

@@ -74,7 +74,7 @@ test('a managed daemon update carries the exact build as a pin and its commit', 
   const target: UpgradeTarget = { daemon, instance: null, ui: null }
   const enqueued: DaemonOutboundEnvelope[] = []
   const coordinator = createUpgradeCoordinator({
-    store: createMemoryUpgradeStore({ facts: [host('adrastea')], latest: target }),
+    store: createMemoryUpgradeStore({ facts: [host('host-a')], latest: target }),
     enqueue: (_serverId, envelope) => {
       enqueued.push(envelope)
       return Promise.resolve()

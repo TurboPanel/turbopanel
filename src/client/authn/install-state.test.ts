@@ -35,7 +35,7 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../../features/system/hierarchy.ts'
 import { useColocatedCredentialsTempDir } from '../../test-fixtures/colocated-credentials.test.support.ts'
 
@@ -243,7 +243,10 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
       .select({ id: workspace.id, kind: workspace.kind })
       .from(workspace)
       .where(
-        and(eq(workspace.organizationId, winnerOrgId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
+        and(
+          eq(workspace.organizationId, winnerOrgId),
+          eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+        )
       )
     if (systemRows.length !== 1) {
       throw new Error(`expected exactly one System workspace, got ${systemRows.length}`)
@@ -320,7 +323,7 @@ it('install produces System workspace then Default Workspace', async () => {
 
     assertEquals(rows.length, 2)
     assertEquals(rows[0]?.name, SYSTEM_WORKSPACE_DISPLAY_NAME)
-    assertEquals(rows[0]?.kind, WORKSPACE_KIND_SYSTEM)
+    assertEquals(rows[0]?.kind, WORKSPACE_KIND_TURBOPANEL)
     assertEquals(rows[1]?.name, DEFAULT_WORKSPACE_NAME)
     assertEquals(rows[1]?.kind, WORKSPACE_KIND_USER)
   } finally {

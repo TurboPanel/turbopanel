@@ -1,0 +1,83 @@
+/**
+ * What a `PATCH /projects/:id` may change while the project's Base follows its
+ * repository's compose file.
+ *
+ * The Base document (`options.compose`, `options.composeOverlays`) and the
+ * source it follows (`composeSource`, except `mode`, which belongs to
+ * `PATCH /projects/:id/compose-source`) cannot be changed: the next deploy
+ * would overwrite them. The settings stored next to them (Keep Original Names
+ * as `options.containerNaming`, the default server pin as
+ * `options.defaultServerId`, the deploy tuning keys) are not part of the Base
+ * and save as usual.
+ *
+ * The UI saves the Base editor's whole options object, so a document that is
+ * sent back unchanged is not an edit. Options are written whole, so the stored
+ * document is put back into every options write.
+ */
+import { CONFIGURATION_OPTION_KEYS } from './edit-target.ts'
+import {
+  parseProjectOptions,
+  type ProjectComposeSource,
+} from '../../features/projects/project-options.ts'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Deep equality of JSON values; the order of an object's keys does not matter. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => sameJson(item, b[index]))
+    )
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = Object.keys(a).filter((key) => a[key] !== undefined)
+    const others = Object.keys(b).filter((key) => b[key] !== undefined)
+    return keys.length === others.length && keys.every((key) => sameJson(a[key], b[key]))
+  }
+  return a === b
+}
+
+function sameLayerValue(key: string, sent: unknown, stored: unknown): boolean {
+  if (key === 'composeOverlays') return sameJson(sent ?? [], stored ?? [])
+  return sameJson(sent, stored)
+}
+
+const SOURCE_KEYS = ['sourceId', 'ref', 'path', 'seededCommitSha', 'seededDigest'] as const
+
+function sameSource(sent: unknown, stored: ProjectComposeSource): boolean {
+  if (!isRecord(sent)) return false
+  return SOURCE_KEYS.every((key) => sameJson(sent[key], stored[key]))
+}
+
+/**
+ * True when the options about to be written change the Base document or the
+ * source it follows (the caller answers 409 `base_tracks_repository`). Only for
+ * a project that is tracking. The options are the normalized ones the write
+ * path would store (document validated, placement stripped), so they compare
+ * directly with the stored ones.
+ */
+export function changesTrackedBase(
+  options: Record<string, unknown>,
+  storedOptions: unknown
+): boolean {
+  const stored = isRecord(storedOptions) ? storedOptions : {}
+  for (const key of CONFIGURATION_OPTION_KEYS) {
+    if (key in options && !sameLayerValue(key, options[key], stored[key])) return true
+  }
+  const source = parseProjectOptions(stored).composeSource
+  return Boolean(source && 'composeSource' in options && !sameSource(options.composeSource, source))
+}
+
+/** Options are written whole: put the stored Base document back into the options about to be written. */
+export function keepTrackedBase(storedOptions: unknown, options: Record<string, unknown>): void {
+  const stored = isRecord(storedOptions) ? storedOptions : {}
+  for (const key of CONFIGURATION_OPTION_KEYS) {
+    if (key in stored) options[key] = stored[key]
+    else delete options[key]
+  }
+}

@@ -256,20 +256,6 @@ export const tunnelSchemas = {
       },
     },
   },
-  VerifyOrigin: {
-    type: 'object',
-    description:
-      'The verified connection to your web server: asked for, in effect, and which names still wait for a site or a certificate.',
-    properties: {
-      enabled: { type: 'boolean' },
-      active: {
-        type: 'boolean',
-        description:
-          'Every name is served with a covering origin certificate, so the connector verifies.',
-      },
-      pendingNames: { type: 'array', items: { type: 'string' } },
-    },
-  },
   Tunnel: {
     type: 'object',
     description:
@@ -303,13 +289,72 @@ export const tunnelSchemas = {
         description: 'Servers that run a connector now, from the placement rules.',
       },
       warnings: { type: 'array', items: { type: 'string' } },
-      verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
+      peerHop: {
+        type: 'array',
+        description:
+          'What each server that carries this Tunnel or runs one of its sites last reported about the client-certificate check on the hop between servers, sorted by server. Servers that only run a site are asked too.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'mode', 'downgraded', 'reportedAt'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            mode: {
+              type: 'string',
+              enum: ['require', 'verify', 'none'],
+              description:
+                '`require`: the server checks a client certificate. `verify`: it checks one when shown but admits a peer without. `none`: the daemon has reported no mode (not updated yet, or no table sent).',
+            },
+            downgraded: {
+              type: 'boolean',
+              description:
+                '`require` was asked for and `verify` is what runs (the peer certificate lacks client use); the panel issues a new certificate once per report.',
+            },
+            reportedAt: {
+              type: ['string', 'null'],
+              format: 'date-time',
+              description: 'When the daemon last reported the mode; null when `mode` is `none`.',
+            },
+          },
+        },
+      },
+      statusPorts: {
+        type: 'array',
+        description:
+          'Whether the connector status ports (20300-20899) are locked on each server that carries this Tunnel, as the daemon last reported it, sorted by server. It is the outcome of the last lock load, not a live check.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'locked', 'reason', 'checkedAt'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            locked: {
+              type: ['boolean', 'null'],
+              description:
+                'True when the last lock load succeeded, false when it failed, null when the daemon has not reported one (an older daemon, or none tried yet). Null is unknown, never locked.',
+            },
+            reason: {
+              type: ['string', 'null'],
+              description: 'Why the last load failed; null unless `locked` is false.',
+            },
+            checkedAt: {
+              type: ['string', 'null'],
+              format: 'date-time',
+              description: 'When the last load ran, so the age can be shown; null when unknown.',
+            },
+          },
+        },
+      },
+      verifiedNames: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "Names whose hop to your web server the connector verifies, as last written to the provider. A name is verified by itself when its certificate is a provider origin certificate or a ready public Let's Encrypt pair that covers it and a successful deploy carried it; every other name skips verification.",
+      },
       runTokenRotation: {
         oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
       },
       runTokenRotationBlock: {
         description:
-          'Why Replace Run Token would be refused now (`tunnel_removing`, `tunnel_not_ready`, `rotation_in_progress`, `tunnel_daemon_too_old` or `server_not_ready`, the last two with `serverIds`), or null when it can start. A single carrying server is not a block: it needs `confirmSingleServer`.',
+          'Why Replace Run Token would be refused now (`tunnel_removing`, `tunnel_not_ready`, `rotation_in_progress` or `server_not_ready`, the last with `serverIds`), or null when it can start. A single carrying server is not a block: it needs `confirmSingleServer`.',
         oneOf: [
           {
             type: 'object',
@@ -364,7 +409,7 @@ export const tunnelSchemas = {
       isLocalOnly: {
         type: 'boolean',
         description:
-          "True (the default) = only the Tunnel connector and the servers that carry the same Tunnel may reach this name on the server that runs the site; everyone else is dropped. False = the name is also public, so everyone is answered. The lock is applied when the site is deployed: a deploy to a server whose daemon is too old to enforce it is refused (409 `tunnel_daemon_too_old`), and a locked name that is pinned to a public Let's Encrypt certificate is refused (409 `tunnel_name_public_certificate`) only when the site also serves ordinary public names; a site whose names are all tunnel-only deploys on the internal certificate instead. A name added to a Tunnel before the site has it is locked on the site's first deploy. Changing the servers of a Tunnel changes who may reach the name; the lock follows within seconds on a server whose daemon supports it, and at the next deploy of the site otherwise (the Tunnel's `warnings` name how many servers are in that case).",
+          "True (the default) = only the Tunnel connector and the servers that carry the same Tunnel may reach this name on the server that runs the site; everyone else is dropped. False = the name is also public, so everyone is answered. The lock is applied when the site is deployed: a locked name that is pinned to a public Let's Encrypt certificate is refused (409 `tunnel_name_public_certificate`) only when the site also serves ordinary public names; a site whose names are all tunnel-only deploys on the internal certificate instead. A name added to a Tunnel before the site has it is locked on the site's first deploy. Changing the servers of a Tunnel changes who may reach the name; the lock follows within seconds.",
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
       dns: { type: 'string', enum: ['created', 'none'] },
@@ -372,6 +417,11 @@ export const tunnelSchemas = {
         type: ['string', 'null'],
         description:
           'Why a removal is waiting, in plain words (for example no API Token can edit the DNS of its zone); the row stays in `attention` and a retry finishes it. Null otherwise.',
+      },
+      routingNote: {
+        type: ['string', 'null'],
+        description:
+          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, or no server that runs it has a datacenter network address or a public address). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
       },
       createdAt: { type: 'string', format: 'date-time' },
     },
@@ -624,40 +674,14 @@ export const tunnelPaths: Record<string, unknown> = {
   '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/verify-origin': {
     put: {
       tags: ['Organizations'],
-      summary: 'Verify the connection between a tunnel and your web server',
+      summary: 'Verify the connection between a tunnel and your web server (removed)',
       description:
-        "Owners and managers only. On: every site that serves the tunnel names gets an origin certificate for exactly the names it serves (a certificate TurboPanel already issued that covers them is reused; `wildcard` asks for one wildcard instead), is pointed at it, and the connector is told to verify. A site that does not exist yet keeps its names `pending`, and the connector keeps skipping verification for the whole tunnel until this is applied again (it is safe to repeat). Servers pick up a new certificate with the site's next deploy (`needsDeploy`). Off: the connector skips verification again. 409 `verify_origin_public_names` (the site also serves a name that is not a verified tunnel name), `verify_origin_zones` (names in more than one zone), `verify_origin_names` (a wildcard does not cover a deeper name), `badge_cannot_certify`, `badge_cannot_dns`, `badge_cannot_tunnel`.",
+        "Removed. Always answers 410 `verify_origin_removed`: verification is per name now and follows each name's certificate (see `verifiedNames` on a tunnel).",
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['enabled'],
-              properties: { enabled: { type: 'boolean' }, wildcard: { type: 'boolean' } },
-            },
-          },
-        },
-      },
       responses: {
-        ...jsonOk('Updated', {
-          type: 'object',
-          properties: {
-            tunnel: { $ref: '#/components/schemas/Tunnel' },
-            verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
-            pinnedHostingIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-            deferredHostingIds: {
-              type: 'array',
-              items: { type: 'string', format: 'uuid' },
-              description:
-                'Sites left for the next request: one request asks the provider for at most 10 certificates. Apply again to continue; it is idempotent.',
-            },
-            needsDeploy: { type: 'boolean' },
-          },
-        }),
-        ...errors({ badRequest: true }),
+        '410': { description: 'Removed' },
+        ...errors(),
       },
     },
   },
@@ -880,7 +904,7 @@ Object.assign(tunnelPaths, {
     post: {
       tags: ['Organizations'],
       summary: "Replace a Tunnel's run token",
-      description: `Owners and managers only. Issues a new run token at the provider without removing the Tunnel, then moves the servers that run it to the new token one at a time: each server's connector restarts on the new token, and the next server waits until it reports its connector connected and traffic has had ten minutes to move onto it (the provider's documented wait). At the end every connection of the Tunnel is dropped once, so a connection opened with the old token cannot stay; connectors briefly reconnect. Answers 202 with where the rotation is (\`rotation\`, also shown on the Tunnel as \`runTokenRotation\`) and \`warnings\`; the periodic sweep moves it on. A server that cannot be reached waits behind the others, and a waiting server whose connector went down is given the new token at once; both are checked again at the end. A stop that can clear up by itself (a provider error, no remaining server reachable, a server that refuses the new token or does not connect within ten minutes) has \`phase: stopped\` with \`stoppedReason\` and resumes on its own a few minutes later (\`resumesOnItsOwn\`); sending this again resumes at once from there, with the secret and token already chosen, even while a server is out of reach. \`oldTokenServerIds\` lists the servers that may still hold the old token: the waiting ones once the new token is issued, or every server when it stopped before the provider's answer came back. The token is never returned. Refusals: 409 \`rotation_single_server\` (only one server runs the Tunnel, so visitors lose it for a few seconds; send \`confirmSingleServer: true\`), \`tunnel_daemon_too_old\` (with \`serverIds\`: a server's daemon cannot move its connector to a new token), \`rotation_in_progress\`, \`tunnel_removing\`, \`tunnel_not_ready\`; 503 \`secrets_unavailable\`. ${TUNNEL_ERRORS}`,
+      description: `Owners and managers only. Issues a new run token at the provider without removing the Tunnel, then moves the servers that run it to the new token one at a time: each server's connector restarts on the new token, and the next server waits until it reports its connector connected and traffic has had ten minutes to move onto it (the provider's documented wait). At the end every connection of the Tunnel is dropped once, so a connection opened with the old token cannot stay; connectors briefly reconnect. Answers 202 with where the rotation is (\`rotation\`, also shown on the Tunnel as \`runTokenRotation\`) and \`warnings\`; the periodic sweep moves it on. A server that cannot be reached waits behind the others, and a waiting server whose connector went down is given the new token at once; both are checked again at the end. A stop that can clear up by itself (a provider error, no remaining server reachable, a server that refuses the new token or does not connect within ten minutes) has \`phase: stopped\` with \`stoppedReason\` and resumes on its own a few minutes later (\`resumesOnItsOwn\`); sending this again resumes at once from there, with the secret and token already chosen, even while a server is out of reach. \`oldTokenServerIds\` lists the servers that may still hold the old token: the waiting ones once the new token is issued, or every server when it stopped before the provider's answer came back. The token is never returned. Refusals: 409 \`rotation_single_server\` (only one server runs the Tunnel, so visitors lose it for a few seconds; send \`confirmSingleServer: true\`), \`rotation_in_progress\`, \`tunnel_removing\`, \`tunnel_not_ready\`; 503 \`secrets_unavailable\`. ${TUNNEL_ERRORS}`,
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
       requestBody: {
@@ -952,6 +976,46 @@ Object.assign(tunnelPaths, {
     },
   },
   '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/hostnames/{doorwayId}': {
+    patch: {
+      tags: ['Organizations'],
+      summary: 'Open or close a Tunnel hostname for direct visitors',
+      description:
+        "Owners and managers only. `isLocalOnly: false` also lets the hostname be reached directly on the site's datacenter address (the daemon opens the site's address and loopback for it); `true` closes it again and is always allowed. Opening is refused with 409 `doorway_bind_not_datacenter` unless the site is on a datacenter network (never a public or local-only one), 409 `doorway_no_site` when no site serves the name yet, and 409 `doorway_removing`. A name whose certificate is still the default of a tunnel-only name moves to the default of a name that is also reached directly (`certificateChangedNames`); a certificate the person picked is never changed. Servers pick the change up with the site's next deploy (`needsDeploy`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        TUNNEL_ID_PARAM,
+        {
+          name: 'doorwayId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['isLocalOnly'],
+              properties: { isLocalOnly: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        ...jsonOk('Updated', {
+          type: 'object',
+          properties: {
+            hostname: { $ref: '#/components/schemas/TunnelHostname' },
+            certificateChangedNames: { type: 'array', items: { type: 'string' } },
+            needsDeploy: { type: 'boolean' },
+          },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
     delete: {
       tags: ['Organizations'],
       summary: 'Remove a hostname from a Tunnel',

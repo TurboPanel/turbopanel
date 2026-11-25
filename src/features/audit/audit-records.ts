@@ -17,10 +17,11 @@
  * - **No secrets in `context`.** Record the fact and the identifiers, never
  *   the credential that changed; the same rule `setting` rows follow.
  */
-import { and, desc, eq, lt } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { audit } from '../../db/schema.ts'
+import { audit, server } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { auditBoundaryId } from './prune.ts'
 
 /**
  * Every action this build records, as `<subject>.<verb>` or
@@ -45,7 +46,11 @@ export const AUDIT_ACTIONS = [
   'organization.compose_privileged_fields.set',
   'compose.host_access.approve',
   'compose.host_access.use',
+  'compose.network_shares.approve',
+  'compose.network_shares.use',
+  'server.network_shares.update',
   'organization.compose_remote_build_sources.set',
+  'organization.build_limits.set',
   'organization.deploy_hooks.set',
   'organization.compose_resource_defaults.set',
   'organization.acme.set',
@@ -53,6 +58,7 @@ export const AUDIT_ACTIONS = [
   'organization.acme_terms.accept',
   'organization.deploy_timeout.set',
   'organization.reauth_for_destructive.set',
+  'organization.delete',
   'organization.icon.set',
   'organization.emoji_icons.set',
   'server.firewall_mode.set',
@@ -110,6 +116,7 @@ export const AUDIT_ACTIONS = [
   'tunnel.run_token.rotate',
   'tunnel.delete',
   'doorway.create',
+  'doorway.update',
   'doorway.dns_replace_failed',
   'doorway.delete',
   'server.tunnel_carrying',
@@ -154,6 +161,11 @@ export const AUDIT_ACTIONS = [
   'instance.hostname_ingress.applied',
   'instance.hostname_ingress.removed',
   'instance.dns01.ordered',
+  'server.terminal.open',
+  'server.terminal.close',
+  'server.terminal_settings.update',
+  // A hosted dead-letter queue received a message that gave up; redacted.
+  'queue.dead_letter',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
@@ -249,4 +261,237 @@ export async function listAuditForOrganization(
     .limit(limit)
 
   return rows
+}
+
+/**
+ * Record one action and throw when the row could not be written. For an
+ * action that must not happen unrecorded (a terminal opening): the caller
+ * refuses the action when this throws, where {@link recordAudit} would only
+ * log.
+ */
+export async function recordAuditOrThrow(db: Db, entry: AuditEntry): Promise<void> {
+  await db.insert(audit).values({
+    organizationId: entry.organizationId ?? null,
+    actorUserId: entry.actorUserId ?? null,
+    actorEmail: entry.actorEmail ?? null,
+    action: entry.action,
+    targetType: entry.targetType,
+    targetId: entry.targetId ?? null,
+    context: entry.context ?? null,
+  })
+}
+
+/** A terminal open row whose session may still owe its close row. */
+export type TerminalOpenAudit = {
+  organizationId: string | null
+  actorUserId: string | null
+  context: Record<string, unknown>
+  /** A `server.terminal.close` row for the same sid already exists. */
+  closed: boolean
+}
+
+/** How far back a late daemon report may look for its open row (a session lasts at most 8 h). */
+const TERMINAL_OPEN_LOOKBACK_HOURS = 12
+
+/** The cross-organization lookup's window: a session lasts at most 8 h, plus slack. */
+const TERMINAL_MOVED_LOOKBACK_HOURS = 9
+
+/**
+ * The open row of one terminal session on one server, by sid, for a daemon
+ * report that arrives when the control plane no longer remembers the session.
+ * The sid is a random UUID the control plane minted; the server id keeps one
+ * daemon from closing another server's session. Null when there is no such row.
+ *
+ * The open row sits under the organization that owned the server when the
+ * session opened, which is not always the one that owns it now (a server can
+ * move, or lose its organization). The server's current organization is tried
+ * first because it keeps the scan on the organization's audit index; when it
+ * has no such row the scan runs over every organization, bounded by the
+ * lookback on the time-ordered primary key.
+ */
+export async function findTerminalOpenAudit(
+  db: Db,
+  serverId: string,
+  sid: string
+): Promise<TerminalOpenAudit | null> {
+  const [owner] = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (owner?.organizationId) {
+    const found = await scanTerminalAudit(db, serverId, sid, owner.organizationId)
+    if (found) return found
+  }
+  return scanMovedTerminalAudit(db, serverId, sid)
+}
+
+/**
+ * The cross-organization lookup, for a session whose open row is not under the
+ * server's current organization. It has no organization index to use, so it
+ * stays small: the open row alone (one row), inside the window a session can
+ * still be open in (8 hours plus an hour of slack) on the time-ordered key; the
+ * close row is then looked for only after the open row's own id.
+ */
+async function scanMovedTerminalAudit(
+  db: Db,
+  serverId: string,
+  sid: string
+): Promise<TerminalOpenAudit | null> {
+  const [open] = await db
+    .select({
+      id: audit.id,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, auditBoundaryId(Date.now() - TERMINAL_MOVED_LOOKBACK_HOURS * 3_600_000)),
+        eq(audit.action, 'server.terminal.open'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  if (!open) return null
+  const [close] = await db
+    .select({ id: audit.id })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, open.id),
+        eq(audit.action, 'server.terminal.close'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  return {
+    organizationId: open.organizationId,
+    actorUserId: open.actorUserId,
+    context:
+      open.context && typeof open.context === 'object'
+        ? (open.context as Record<string, unknown>)
+        : {},
+    closed: close !== undefined,
+  }
+}
+
+async function scanTerminalAudit(
+  db: Db,
+  serverId: string,
+  sid: string,
+  organizationId: string
+): Promise<TerminalOpenAudit | null> {
+  const since = sql`now() - make_interval(hours => ${TERMINAL_OPEN_LOOKBACK_HOURS})`
+  const rows = await db
+    .select({
+      action: audit.action,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        eq(audit.organizationId, organizationId),
+        eq(audit.targetId, serverId),
+        gt(audit.createdAt, since),
+        sql`${audit.context}->>'sid' = ${sid}`,
+        sql`${audit.action} in ('server.terminal.open', 'server.terminal.close')`
+      )
+    )
+  const open = rows.find((row) => row.action === 'server.terminal.open')
+  if (!open) return null
+  const context =
+    open.context && typeof open.context === 'object'
+      ? (open.context as Record<string, unknown>)
+      : {}
+  return {
+    organizationId: open.organizationId,
+    actorUserId: open.actorUserId,
+    context,
+    closed: rows.some((row) => row.action === 'server.terminal.close'),
+  }
+}
+
+/** Why a close row was written for a session nothing reported the end of. */
+export const TERMINAL_LOST_CLOSE_REASON = 'lost:no-close-report'
+
+/**
+ * A session lasts at most 8 hours; an open row older than this with no close
+ * row belongs to a session whose end nobody reported (the cell was replaced or
+ * evicted and the daemon's report never arrived).
+ */
+const TERMINAL_ABANDONED_AFTER_HOURS = 9
+
+/** How far back the abandoned-open scan looks (bounded on the time-ordered id). */
+const TERMINAL_ABANDONED_LOOKBACK_HOURS = 48
+
+/**
+ * Write the close row for every terminal open row old enough that its session
+ * must be over and that has none, against the organization of the open row.
+ * Returns how many rows it wrote. Run from the periodic sweeps; a close row
+ * that a late report wrote first is found and left alone.
+ */
+export async function closeAbandonedTerminalOpens(
+  db: Db,
+  opts: { nowMs?: number; limit?: number } = {}
+): Promise<number> {
+  const nowMs = opts.nowMs ?? Date.now()
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 500)
+  const newest = auditBoundaryId(nowMs - TERMINAL_ABANDONED_AFTER_HOURS * 3_600_000)
+  const oldest = auditBoundaryId(nowMs - TERMINAL_ABANDONED_LOOKBACK_HOURS * 3_600_000)
+  const rows = await db
+    .select({
+      targetId: audit.targetId,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        eq(audit.action, 'server.terminal.open'),
+        gte(audit.id, oldest),
+        lt(audit.id, newest),
+        sql`not exists (
+          select 1 from audit c
+          where c.action = 'server.terminal.close'
+            and c.id >= ${oldest}
+            and c.target_id = ${audit.targetId}
+            and c.context->>'sid' = ${audit.context}->>'sid'
+        )`
+      )
+    )
+    .limit(limit)
+  const writes = rows.flatMap((open) => {
+    const context =
+      open.context && typeof open.context === 'object'
+        ? (open.context as Record<string, unknown>)
+        : {}
+    if (!open.targetId || typeof context.sid !== 'string') return []
+    return [
+      recordAudit(db, {
+        organizationId: open.organizationId,
+        actorUserId: open.actorUserId,
+        action: 'server.terminal.close',
+        targetType: 'server',
+        targetId: open.targetId,
+        context: {
+          sid: context.sid,
+          kind: context.kind,
+          containerId: context.containerId,
+          loginUser: context.loginUser,
+          reason: TERMINAL_LOST_CLOSE_REASON,
+          confirmed: false,
+        },
+      }),
+    ]
+  })
+  await Promise.all(writes)
+  const written = writes.length
+  return written
 }

@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
-  decideRetry,
+  decideEmailRetry,
   EMAIL_RETRY_TIER_DELAYS_MS,
   failedAttemptsFromHeaders,
 } from './retry-policy.ts'
@@ -15,26 +15,26 @@ const test = Deno.test.bind(Deno)
 
 test('sign-in mail retries soon and gets one more attempt than the rest', () => {
   const tiers = [1, 2, 3, 4, 5].map((n) => {
-    const d = decideRetry('email-otp', n, () => 1)
+    const d = decideEmailRetry('email-otp', n, () => 1)
     return d.action === 'retry' ? d.delayMs : 'dead'
   })
   assertEquals(tiers, [30_000, 60_000, 120_000, 300_000, 300_000])
-  assertEquals(decideRetry('email-otp', 6).action, 'dead_letter')
-  assertEquals(decideRetry('password-reset', 6).action, 'dead_letter')
+  assertEquals(decideEmailRetry('email-otp', 6).action, 'dead_letter')
+  assertEquals(decideEmailRetry('password-reset', 6).action, 'dead_letter')
 })
 
 test('other mail backs off further and gives up after fewer attempts', () => {
   const delays = [1, 2, 3, 4].map((n) => {
-    const d = decideRetry('notification', n, () => 1)
+    const d = decideEmailRetry('notification', n, () => 1)
     return d.action === 'retry' ? d.delayMs : 'dead'
   })
   assertEquals(delays, [60_000, 300_000, 900_000, 3_600_000])
-  assertEquals(decideRetry('notification', 5).action, 'dead_letter')
+  assertEquals(decideEmailRetry('notification', 5).action, 'dead_letter')
 })
 
 test('jitter shortens a delay to between half and all of its tier', () => {
   for (const random of [0, 0.25, 0.999]) {
-    const d = decideRetry('notification', 2, () => random)
+    const d = decideEmailRetry('notification', 2, () => random)
     if (d.action !== 'retry') throw new TypeError('expected a retry')
     const base = EMAIL_RETRY_TIER_DELAYS_MS[d.tier]!
     assertEquals(d.delayMs >= base / 2 && d.delayMs <= base, true)

@@ -63,11 +63,10 @@ const slotMapping: SlotMapping = {
 function input(atMs: number, serverExtended: MetricsExtended | undefined): MetricsSampleInput {
   return {
     metadata: {
-      version: serverExtended ? 8 : 6,
+      version: 8,
       sampledAt: new Date(atMs).toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {

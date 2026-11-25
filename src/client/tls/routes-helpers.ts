@@ -1,5 +1,6 @@
 import { plainCertificateFailure } from '../../features/hostings/acme-failure-text.ts'
 import { isLoopbackOrPrivateHostname } from '../../features/install/install-tls.ts'
+import { parseCertificateNames } from '../../features/tls/dns-certificates/names.ts'
 import {
   encryptSecret,
   ENVELOPE_MAGIC,
@@ -329,21 +330,27 @@ export function materialFromLetsEncrypt(
   if (!hostnames) {
     return createFailure('Invalid request')
   }
-  if (hostnames.some((n) => n.startsWith('*.'))) {
+  const dns = body.challengeType === 'dns-01'
+  const wildcard = hostnames.some((n) => n.startsWith('*.'))
+  // A wildcard can only be proved over DNS.
+  if (wildcard && !dns) {
     return createFailure('wildcard_unsupported')
   }
-  if (hostnames.some((n) => isLoopbackOrPrivateHostname(n))) {
+  if (hostnames.some((n) => isLoopbackOrPrivateHostname(n.replace(/^\*\./, '')))) {
     return createFailure('private_hostname_unsupported')
   }
-  if (body.challengeType === 'dns-01') {
-    return createFailure('dns_01_unsupported')
+  let names = hostnames
+  if (dns) {
+    const parsed = parseCertificateNames(hostnames)
+    if (!parsed.ok) return createFailure('Invalid request', parsed.detail)
+    names = parsed.names
   }
   return {
     certificatePem: null,
     privateKeyPemSealed: null,
     metadata: {
-      dnsNames: hostnames,
-      hasWildcard: false,
+      dnsNames: names,
+      hasWildcard: wildcard,
       notBefore: new Date(0).toISOString(),
       notAfter: new Date(0).toISOString(),
       fingerprintSha256: '',
@@ -351,14 +358,14 @@ export function materialFromLetsEncrypt(
       issuer: '',
       status: 'automatic',
       acme: {
-        challengeType: 'http-01',
+        challengeType: dns ? 'dns-01' : 'http-01',
         managedBy: 'caddy',
         createdFor,
       },
     },
     options: {
       autoRenew: body.autoRenew !== false,
-      requestedHostnames: hostnames,
+      requestedHostnames: names,
     },
   }
 }

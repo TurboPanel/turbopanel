@@ -2,14 +2,16 @@ import { assert, assertEquals } from '@std/assert'
 import { base64urlEncode } from '../lib/encoding/base64url.ts'
 import { openFromSender } from '../lib/panel-identity/hpke.ts'
 import { HPKE_TEST_RECIPIENT_SEED, hpkeTestRecipient } from '../test-fixtures/hpke-vector.ts'
-import { buildSecretsDecryptAnswer } from './secrets-decrypt-answer.ts'
 import {
   parseSealingKeyRegistration,
   registerDaemonSealingKey,
   SEALING_KEY_SIGNATURE_PREFIX,
   type SealingKeyRegistrationStore,
 } from './sealing-key-registration.ts'
-import type { DaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
+import {
+  sealDecryptAnswers,
+  type DaemonSealingKey,
+} from '../features/servers/daemon-sealing-key.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -110,53 +112,15 @@ test('a valid registration is stored; a bad signature or wrong key id changes no
   assertEquals(unknownServer.saved.length, 0)
 })
 
-function answerSource(options: { key: DaemonSealingKey | null }) {
-  const noted: string[] = []
-  return {
-    noted,
-    source: {
-      sealingKey: () => Promise.resolve(options.key),
-      notePlaintextAnswer: (id: string) => {
-        noted.push(id)
-        return Promise.resolve()
-      },
-    },
-  }
-}
-
-test('decrypt answers are sealed to the registered key, never both fields', async () => {
+test('decrypt answers are sealed to the registered key, never plaintext', async () => {
   const recipient = await hpkeTestRecipient()
   const key = { kid: recipient.kid, pub: base64urlEncode(recipient.pub) }
-  const { source, noted } = answerSource({ key })
-  const answer = await buildSecretsDecryptAnswer(source, SERVER_ID, [DECRYPTED_SAMPLE, null])
-  assert('sealed' in answer)
-  assert(!('plaintexts' in answer))
-  assertEquals(answer.sealed.length, 2)
-  assertEquals(answer.sealed[1], null)
-  const opened = await openFromSender(HPKE_TEST_RECIPIENT_SEED, SERVER_ID, answer.sealed[0]!)
+  const sealed = await sealDecryptAnswers([DECRYPTED_SAMPLE, null], SERVER_ID, key)
+  assertEquals(sealed.length, 2)
+  assertEquals(sealed[1], null)
+  const opened = await openFromSender(HPKE_TEST_RECIPIENT_SEED, SERVER_ID, sealed[0]!)
   assertEquals(new TextDecoder().decode(opened), DECRYPTED_SAMPLE)
-  assertEquals(noted, [])
-  assert(!JSON.stringify(answer).includes(DECRYPTED_SAMPLE))
-})
-
-test('servers without a registered key still get plaintext and are counted', async () => {
-  const noKey = answerSource({ key: null })
-  assertEquals(await buildSecretsDecryptAnswer(noKey.source, SERVER_ID, ['b']), {
-    plaintexts: ['b'],
-  })
-  assertEquals(noKey.noted, [SERVER_ID])
-
-  assertEquals(await buildSecretsDecryptAnswer(undefined, SERVER_ID, ['c']), {
-    plaintexts: ['c'],
-  })
-})
-
-test('a failing plaintext counter never blocks the answer', async () => {
-  const failing = {
-    sealingKey: () => Promise.resolve(null),
-    notePlaintextAnswer: () => Promise.reject(new Error('db down')),
-  }
-  assertEquals(await buildSecretsDecryptAnswer(failing, SERVER_ID, ['x']), { plaintexts: ['x'] })
+  assert(!JSON.stringify(sealed).includes(DECRYPTED_SAMPLE))
 })
 
 test('sealing and registering write no plaintext or key material to the console', async () => {
@@ -171,10 +135,7 @@ test('sealing and registering write no plaintext or key material to the console'
       ...body,
       sig: 'x'.repeat(86),
     })
-    await buildSecretsDecryptAnswer(answerSource({ key }).source, SERVER_ID, [DECRYPTED_SAMPLE])
-    await buildSecretsDecryptAnswer(answerSource({ key: null }).source, SERVER_ID, [
-      DECRYPTED_SAMPLE,
-    ])
+    await sealDecryptAnswers([DECRYPTED_SAMPLE], SERVER_ID, key)
   } finally {
     capture.restore()
   }

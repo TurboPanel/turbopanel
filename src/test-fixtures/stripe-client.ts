@@ -36,7 +36,7 @@ export function createStripeClientDouble(respond: StripeResponder): StripeClient
     method: StripeCall['method'],
     path: string,
     body: StripeFormParams | undefined,
-    idempotencyKey: string | null,
+    idempotencyKey: string | null
   ): StripeCall => {
     const encoded = encodeStripeForm(body)
     const form = [...new URLSearchParams(encoded).entries()] as [string, string][]
@@ -51,10 +51,12 @@ export function createStripeClientDouble(respond: StripeResponder): StripeClient
     post: <T>(path: string, body?: StripeFormParams, opts?: { idempotencyKey?: string }) =>
       Promise.resolve(respond(record('POST', path, body, opts?.idempotencyKey ?? null)) as T),
     del: <T>(path: string, opts?: { idempotencyKey?: string }) =>
-      Promise.resolve(respond(record('DELETE', path, undefined, opts?.idempotencyKey ?? null)) as T),
+      Promise.resolve(
+        respond(record('DELETE', path, undefined, opts?.idempotencyKey ?? null)) as T
+      ),
     listAll: <T>(path: string, query?: StripeFormParams) => {
       const result = respond(record('GET', path, query, null)) as { data?: T[] } | T[]
-      return Promise.resolve(Array.isArray(result) ? result : result.data ?? [])
+      return Promise.resolve(Array.isArray(result) ? result : (result.data ?? []))
     },
   }
 }

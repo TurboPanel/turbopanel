@@ -80,7 +80,12 @@ export function validatePermissionEntityCompatibility(
     }
   }
 
-  if (isSystemPermissionKey(permissionKey) && entityType !== 'organization') {
+  if (
+    (isSystemPermissionKey(permissionKey) ||
+      permissionKey === 'environments.deploy_network_shares' ||
+      permissionKey === 'terminal:container') &&
+    entityType !== 'organization'
+  ) {
     return {
       ok: false,
       error: `${permissionKey} may only be granted on organization entities`,
@@ -550,7 +555,7 @@ async function resolveActor(
   actorType: CreateAccessGrantInput['actorType'],
   actorId: string,
   entityOrganizationId: string
-): Promise<{ ok: true } | { ok: false; status: 400 | 404; error: string }> {
+): Promise<{ ok: true } | { ok: false; status: 404; error: string }> {
   if (actorType === 'user') {
     const rows = await db.select({ id: user.id }).from(user).where(eq(user.id, actorId)).limit(1)
     if (rows.length === 0) {
@@ -566,15 +571,9 @@ async function resolveActor(
       .where(eq(team.id, actorId))
       .limit(1)
     const row = rows[0]
-    if (!row) {
+    // A team of another organization answers exactly like an unknown team.
+    if (row?.organizationId !== entityOrganizationId) {
       return { ok: false, status: 404, error: 'Team not found' }
-    }
-    if (row.organizationId !== entityOrganizationId) {
-      return {
-        ok: false,
-        status: 400,
-        error: 'Team must belong to the same organization as the entity',
-      }
     }
     return { ok: true }
   }
@@ -584,15 +583,9 @@ async function resolveActor(
     .from(organization)
     .where(eq(organization.id, actorId))
     .limit(1)
-  if (rows.length === 0) {
+  // Another organization answers exactly like an unknown one.
+  if (rows.length === 0 || actorId !== entityOrganizationId) {
     return { ok: false, status: 404, error: 'Organization not found' }
-  }
-  if (actorId !== entityOrganizationId) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Organization actor must match the entity organization',
-    }
   }
   return { ok: true }
 }

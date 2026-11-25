@@ -38,7 +38,6 @@ import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
 import { buildTicketInstallCommand, resolveInstallOrigin } from './install-origin.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
@@ -442,7 +441,6 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       joinId: joinTicket.id,
       joinExpiresAt: joinTicket.expiresAt,
       licenseToken: joinTicket.plaintext,
-      licenseArg: encodeLicenseArg(joinTicket.id, joinTicket.plaintext),
       installCommand: await buildTicketInstallCommand(c, db, opts, resolved.origin, joinTicket),
     })
   })

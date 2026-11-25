@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { deriveFirewall, type FirewallDeriveInput } from './derive.ts'
+import { deriveFirewall, type DerivedExposure, type FirewallDeriveInput } from './derive.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from './policy.ts'
 
 const test = Deno.test.bind(Deno)
@@ -284,4 +284,74 @@ test('two clusters on one host get one rule each, never a shared or open one', (
       ['34002', ['198.51.100.9/32']],
     ]
   )
+})
+
+function composeExposure(ports: string, destination?: string): DerivedExposure {
+  return {
+    source: 'compose',
+    scope: 'published',
+    proto: 'tcp',
+    ports,
+    reach: 'public',
+    comment: 'App web',
+    ...(destination === undefined ? {} : { destination }),
+  }
+}
+
+test('the same port bound to different addresses keeps one rule per address', () => {
+  const derivation = deriveFirewall(
+    input({
+      exposures: [
+        composeExposure('8081', '192.0.2.10'),
+        composeExposure('8081', '192.0.2.11'),
+        composeExposure('8081'),
+        composeExposure('8081', '192.0.2.10'),
+      ],
+    })
+  )
+  assertEquals(
+    derivation.rules.map((rule) => [rule.id, rule.destinations]),
+    [
+      ['d:compose:tcp:8081:public', undefined],
+      ['d:compose:tcp:8081:public:192.0.2.10', ['192.0.2.10']],
+      ['d:compose:tcp:8081:public:192.0.2.11', ['192.0.2.11']],
+    ]
+  )
+})
+
+test('rules that read the same keep distinct ids when their sources differ, and ids stay within 64 characters', () => {
+  const peers = (sources: string[]): DerivedExposure => ({
+    source: 'cluster',
+    scope: 'published',
+    proto: 'tcp',
+    ports: '5432',
+    reach: 'peers',
+    comment: 'peers',
+    destination: '2001:db8:0:0:0:0:0:1234',
+    sources,
+  })
+  const derivation = deriveFirewall(
+    input({ exposures: [peers(['192.0.2.1']), peers(['192.0.2.2']), peers(['192.0.2.1'])] })
+  )
+  assertEquals(derivation.rules.length, 2)
+  assertEquals(new Set(derivation.rules.map((rule) => rule.id)).size, 2)
+  for (const rule of derivation.rules) assertEquals(rule.id.length <= 64, true)
+})
+
+test('a port bound to a datacenter address derives to the datacenter sources', () => {
+  const derivation = deriveFirewall(
+    input({
+      exposures: [{ ...composeExposure('8081', '192.0.2.10'), reach: 'datacenter' }],
+      sources: { servers: [], datacenter: ['192.0.2.0/24'], fabric: [] },
+    })
+  )
+  assertEquals(derivation.rules[0]?.sources, ['192.0.2.0/24'])
+})
+
+test('a datacenter-reach compose port is withheld with a note when no datacenter address is known', () => {
+  const derivation = deriveFirewall(
+    input({ exposures: [{ ...composeExposure('8081', '10.0.2.10'), reach: 'datacenter' }] })
+  )
+  assertEquals(derivation.rules, [])
+  assertEquals(derivation.notes[0]?.startsWith('App web (tcp 8081) is not sent:'), true)
 })
