@@ -7,7 +7,6 @@ import { assertEquals, assertRejects } from '@std/assert'
 import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from './config.ts'
 import { createStripeClient, STRIPE_LIST_PAGE_SIZE, type StripeFetch } from './client.ts'
 import { StripeApiError } from './errors.ts'
-import { createCustomerForOrganization } from './subscriptions.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -230,83 +229,4 @@ test('a fetch that throws is a transient transport error', async () => {
   })
   const err = await assertRejects(() => client.get('/v1/x'), StripeApiError)
   assertEquals([err.type, err.isTransient, err.status], ['transport_error', true, 0])
-})
-
-test('/v2 paths send a JSON body, the JSON content type and the accounts version when one is set; /v1 is unchanged', async () => {
-  const double = fetchDouble(() => jsonResponse(200, { id: 'acct_1' }))
-  const client = createStripeClient(
-    { ...CONFIG, accountsApiVersion: '2026-11-18.preview' },
-    { fetch: double.fetch }
-  )
-  await client.post('/v2/core/accounts', {
-    configuration: { customer: {} },
-    metadata: { k: 'v', gone: null },
-    display_name: undefined,
-  })
-  await client.get('/v2/core/accounts/acct_1', { include: ['configuration.customer'] })
-  await client.post('/v1/subscriptions', { customer_account: 'acct_1' })
-  const [create, retrieve, v1] = double.calls
-  assertEquals(create?.headers['content-type'], 'application/json')
-  assertEquals(create?.headers['stripe-version'], '2026-11-18.preview')
-  assertEquals(typeof create?.headers['idempotency-key'], 'string')
-  // `null` stays null (v2 clears a key with null); `undefined` is omitted.
-  assertEquals(JSON.parse(create?.body ?? ''), {
-    configuration: { customer: {} },
-    metadata: { k: 'v', gone: null },
-  })
-  assertEquals(
-    retrieve?.url,
-    'https://api.stripe.com/v2/core/accounts/acct_1?include%5B0%5D=configuration.customer'
-  )
-  assertEquals(retrieve?.body, null)
-  assertEquals(retrieve?.headers['stripe-version'], '2026-11-18.preview')
-  assertEquals(v1?.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
-  assertEquals(v1?.headers['content-type'], 'application/x-www-form-urlencoded')
-  assertEquals(v1?.body, 'customer_account=acct_1')
-})
-
-test('/v2 calls use the v1 pin when no accounts version is configured', async () => {
-  const double = fetchDouble(() => jsonResponse(200, {}))
-  await createStripeClient(CONFIG, { fetch: double.fetch }).get('/v2/core/accounts/acct_1')
-  assertEquals(double.calls[0]?.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
-})
-
-test('createCustomerForOrganization over the real client posts a v2 Account with the customer configuration and the organization metadata', async () => {
-  const double = fetchDouble(() => jsonResponse(200, { id: 'acct_7', object: 'v2.core.account' }))
-  const client = createStripeClient(CONFIG, { fetch: double.fetch })
-  const out = await createCustomerForOrganization(client, {
-    organizationId: 'org-1',
-    email: 'o@example.com',
-    name: 'Org One',
-    idempotencyKey: 'customer:org-1',
-  })
-  assertEquals(out, { providerCustomerId: 'acct_7' })
-  const call = double.calls[0]!
-  assertEquals(call.url, 'https://api.stripe.com/v2/core/accounts')
-  assertEquals(call.headers['idempotency-key'], 'customer:org-1')
-  assertEquals(JSON.parse(call.body ?? ''), {
-    configuration: {
-      customer: { capabilities: { automatic_indirect_tax: { requested: true } } },
-    },
-    metadata: { turbopanel_organization_id: 'org-1' },
-    contact_email: 'o@example.com',
-    display_name: 'Org One',
-  })
-})
-
-test('a v2 error body keeps the code and message and classifies by status', async () => {
-  const double = fetchDouble(() =>
-    jsonResponse(400, {
-      error: { type: 'invalid_request', code: 'accounts_v2_access_blocked', message: 'blocked' },
-    })
-  )
-  const client = createStripeClient(CONFIG, { fetch: double.fetch })
-  const err = await assertRejects(() => client.post('/v2/core/accounts', {}), StripeApiError)
-  assertEquals(err.code, 'accounts_v2_access_blocked')
-  assertEquals(err.isTransient, false)
-  const conflict = createStripeClient(CONFIG, {
-    fetch: fetchDouble(() => jsonResponse(409, { error: { code: 'idempotency_error' } })).fetch,
-  })
-  const again = await assertRejects(() => conflict.post('/v2/core/accounts', {}), StripeApiError)
-  assertEquals(again.isTransient, true)
 })

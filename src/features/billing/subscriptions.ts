@@ -155,33 +155,25 @@ export type CreateCustomerInput = Readonly<{
 }>
 
 /**
- * C2/C14 — the organization's payer is a v2 Account with the customer
- * configuration (`POST /v2/core/accounts`, JSON). It names its organization
- * in `metadata` under exactly the key `customer-subject.ts` reads, so the
- * first webhook can resolve its subject. The `automatic_indirect_tax`
- * capability is requested because Checkout and subscriptions send
- * `automatic_tax`. No `identity` is sent: a customer-only account takes none
- * (`unsupported_identity_field_for_configs`), and Checkout collects the
- * address. The caller upserts `payer` from the returned id (`acct_…`) immediately.
+ * C2/C14 — the customer names its organization in `metadata` under exactly
+ * the key `customer-subject.ts` reads, so the first webhook can resolve its
+ * subject. The caller upserts `payer` from the returned id immediately.
  */
 export async function createCustomerForOrganization(
   client: StripeClient,
   input: CreateCustomerInput
 ): Promise<{ providerCustomerId: string }> {
-  const account = await client.post<StripeObject>(
-    '/v2/core/accounts',
+  const customer = await client.post<StripeObject>(
+    '/v1/customers',
     {
-      configuration: {
-        customer: { capabilities: { automatic_indirect_tax: { requested: true } } },
-      },
       metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: input.organizationId },
-      ...(input.email ? { contact_email: input.email } : {}),
-      ...(input.name ? { display_name: input.name } : {}),
+      ...(input.email ? { email: input.email } : {}),
+      ...(input.name ? { name: input.name } : {}),
     },
     { idempotencyKey: input.idempotencyKey }
   )
-  const id = str(account.id)
-  if (!id) throw new Error('stripe account create returned no id')
+  const id = str(customer.id)
+  if (!id) throw new Error('stripe customer create returned no id')
   return { providerCustomerId: id }
 }
 
@@ -217,7 +209,7 @@ export async function createSubscription(
   const sub = await client.post<StripeObject>(
     '/v1/subscriptions',
     {
-      customer_account: input.providerCustomerId,
+      customer: input.providerCustomerId,
       items: input.lines.map((line) => ({ price: line.price, quantity: line.quantity })),
       ...SUBSCRIPTION_ANCHOR_PARAMS,
       collection_method: 'charge_automatically',

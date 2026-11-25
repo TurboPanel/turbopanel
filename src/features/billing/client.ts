@@ -10,10 +10,8 @@
  *
  * Three rules every request follows:
  *
- *  - `Authorization: Bearer <secret key>`, `Stripe-Version: <pinned>` and a
- *    `Content-Type` on every call: form encoding for `/v1`, JSON for `/v2`
- *    (Accounts v2 takes and returns JSON; `config.accountsApiVersion` may
- *    override the version for `/v2` only). The
+ *  - `Authorization: Bearer <secret key>`, `Stripe-Version: <pinned>` and
+ *    `Content-Type: application/x-www-form-urlencoded` on every call. The
  *    version pin is what keeps response shapes stable across account
  *    dashboard changes — see `config.ts`.
  *  - **Every mutating call carries an `Idempotency-Key`.** Not optional: the
@@ -83,29 +81,6 @@ function stripePath(path: string): string {
   return path
 }
 
-/**
- * What differs between a `/v1` and a `/v2` call: the version header, the
- * content type and how the params travel. `/v2` mutations send JSON; `/v2`
- * reads still take a query string (arrays as `include[0]=...`, which the form
- * encoder spells), as does every `/v1` read.
- */
-function wireFormat(
-  config: BillingConfig,
-  method: 'GET' | 'POST' | 'DELETE',
-  path: string,
-  params: StripeFormParams | undefined
-): { version: string; contentType: string; query: string; body: string | undefined } {
-  const isV2 = stripePath(path).startsWith('/v2/')
-  const hasBody = method === 'POST'
-  const encoded = isV2 && hasBody ? JSON.stringify(params ?? {}) : encodeStripeForm(params)
-  return {
-    version: isV2 ? (config.accountsApiVersion ?? config.apiVersion) : config.apiVersion,
-    contentType: isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
-    query: hasBody ? '' : encoded,
-    body: hasBody ? encoded : undefined,
-  }
-}
-
 function idOf(item: unknown): string | null {
   if (typeof item !== 'object' || item === null) return null
   const id = (item as { id?: unknown }).id
@@ -125,18 +100,22 @@ export function createStripeClient(
     params: StripeFormParams | undefined,
     idempotencyKey: string | null
   ): Promise<T> {
-    const wire = wireFormat(config, method, path, params)
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.secretKey}`,
-      'Stripe-Version': wire.version,
-      'Content-Type': wire.contentType,
+      'Stripe-Version': config.apiVersion,
+      'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     }
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
 
-    const search = wire.query.length > 0 ? `?${wire.query}` : ''
-    const url = `${baseUrl}${path}${search}`
-    const body = wire.body
+    const encoded = encodeStripeForm(params)
+    let url = `${baseUrl}${stripePath(path)}`
+    let body: string | undefined
+    if (method === 'GET' || method === 'DELETE') {
+      if (encoded.length > 0) url += `?${encoded}`
+    } else {
+      body = encoded
+    }
 
     // Resolved per call, never captured at module load (Workers 10021), and
     // `AbortSignal.timeout` likewise minted here.

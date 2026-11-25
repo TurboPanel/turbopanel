@@ -136,7 +136,7 @@ function stateWith(
     organizationId: ORG,
     userId: null,
     provider: 'stripe',
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     taxId: null,
     createdAt: NOW,
     updatedAt: NOW,
@@ -242,7 +242,7 @@ async function buildApp(opts: HarnessOpts = {}) {
             organizationId: ORG,
             userId: null,
             provider: 'stripe',
-            providerCustomerId: 'acct_1',
+            providerCustomerId: 'cus_1',
             taxId: null,
             createdAt: NOW,
             updatedAt: NOW,
@@ -971,7 +971,7 @@ test("POST /billing/checkout sends the product's default price from the gateway 
   assertEquals(formOf(session, 'metadata[turbopanel_tier_id]'), S3)
   assertEquals(formOf(session, 'metadata[turbopanel_quantity]'), '2')
   assertEquals(formOf(session, 'mode'), 'subscription')
-  assertEquals(formOf(session, 'customer_account'), 'acct_1')
+  assertEquals(formOf(session, 'customer'), 'cus_1')
   assertEquals(formOf(session, 'line_items[0][price]'), 'price_s3_live')
   assertEquals(formOf(session, 'line_items[0][quantity]'), '2')
   assertEquals(formOf(session, 'cancel_url'), `${BASE_URL}/${ORG}/billing?checkout=cancel`)

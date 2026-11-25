@@ -181,13 +181,11 @@ async function assertRejects(fn: () => Promise<unknown>): Promise<void> {
 test('createSubscription pins the anchor config, flexible mode, and omits proration_behavior', async () => {
   const client = createStripeClientDouble(() => ({ id: 'sub_new', status: 'incomplete' }))
   await createSubscription(client, {
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     lines: [{ price: 'price_s3', quantity: 2 }],
     idempotencyKey: 'create-1',
   })
   const call = client.calls[0]!
-  assertEquals(formOf(call, 'customer_account'), 'acct_1')
-  assertEquals(formKeys(call).includes('customer'), false)
   assertEquals(formOf(call, 'billing_mode[type]'), 'flexible')
   assertEquals(formOf(call, 'billing_cycle_anchor_config[day_of_month]'), '1')
   assertEquals(formOf(call, 'billing_cycle_anchor_config[hour]'), '0')
@@ -204,22 +202,13 @@ test('createSubscription pins the anchor config, flexible mode, and omits prorat
 })
 
 test('createCustomerForOrganization writes the metadata key the projection reads', async () => {
-  const client = createStripeClientDouble(() => ({ id: 'acct_9' }))
+  const client = createStripeClientDouble(() => ({ id: 'cus_9' }))
   const out = await createCustomerForOrganization(client, {
     organizationId: 'org-1',
     email: 'o@example.com',
     idempotencyKey: 'customer:org-1',
   })
-  assertEquals(out.providerCustomerId, 'acct_9')
-  assertEquals(client.calls[0]!.path, '/v2/core/accounts')
-  assertEquals(formOf(client.calls[0]!, 'contact_email'), 'o@example.com')
-  assertEquals(
-    formOf(
-      client.calls[0]!,
-      'configuration[customer][capabilities][automatic_indirect_tax][requested]'
-    ),
-    'true'
-  )
+  assertEquals(out.providerCustomerId, 'cus_9')
   assertEquals(formOf(client.calls[0]!, 'metadata[turbopanel_organization_id]'), 'org-1')
   assertEquals(client.calls[0]!.idempotencyKey, 'customer:org-1')
 })

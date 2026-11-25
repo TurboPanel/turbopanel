@@ -506,7 +506,7 @@ export type ClockCustomerOpts = Readonly<{
 }>
 
 /**
- * A customer account (customer configuration) created **on the clock**, naming the scenario's organization
+ * A customer created **on the clock**, naming the scenario's organization
  * in metadata exactly as `checkout.ts` would, with a US address (automatic
  * tax needs a resolvable location) and a default card from a test token.
  */
@@ -514,28 +514,17 @@ export async function createClockCustomer(
   ctx: ScenarioContext,
   opts: ClockCustomerOpts = {}
 ): Promise<{ providerCustomerId: string; paymentMethodId: string }> {
-  const customer = await ctx.client.post<StripeObject>('/v2/core/accounts', {
-    display_name: `TurboPanel harness ${ctx.name}`,
-    contact_email: `harness+${ctx.name}@example.invalid`,
+  const customer = await ctx.client.post<StripeObject>('/v1/customers', {
+    test_clock: ctx.clock.id,
+    name: `TurboPanel harness ${ctx.name}`,
+    email: `harness+${ctx.name}@example.invalid`,
     metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ctx.organizationId },
-    configuration: {
-      customer: {
-        test_clock: ctx.clock.id,
-        capabilities: { automatic_indirect_tax: { requested: true } },
-        // A customer-only account takes no `identity`
-        // (`unsupported_identity_field_for_configs`); the account's shipping
-        // address is the first location Stripe Tax uses.
-        shipping: {
-          name: `TurboPanel harness ${ctx.name}`,
-          address: {
-            line1: '510 Townsend St',
-            city: 'San Francisco',
-            state: 'CA',
-            postal_code: '94103',
-            country: 'us',
-          },
-        },
-      },
+    address: {
+      line1: '510 Townsend St',
+      city: 'San Francisco',
+      state: 'CA',
+      postal_code: '94103',
+      country: 'US',
     },
   })
   const providerCustomerId = str(customer.id)
@@ -560,10 +549,10 @@ export async function attachCard(
   const paymentMethodId = str(pm.id)
   check(paymentMethodId, 'payment method create returned no id')
   await ctx.client.post(`/v1/payment_methods/${encodeURIComponent(paymentMethodId)}/attach`, {
-    customer_account: providerCustomerId,
+    customer: providerCustomerId,
   })
-  await ctx.client.post(`/v2/core/accounts/${encodeURIComponent(providerCustomerId)}`, {
-    configuration: { customer: { billing: { default_payment_method: paymentMethodId } } },
+  await ctx.client.post(`/v1/customers/${encodeURIComponent(providerCustomerId)}`, {
+    invoice_settings: { default_payment_method: paymentMethodId },
   })
   ctx.log(`${failing ? 'failing' : 'good'} card ${paymentMethodId} is now the default`)
   return paymentMethodId
