@@ -15,14 +15,14 @@ src/features/billing/
 ├── form-encode.ts        Stripe's bracket-syntax form encoding (pure)
 ├── errors.ts             StripeApiError, permanent vs transient
 ├── webhook-signature.ts  Stripe-Signature over raw bytes, tolerance, multi-v1
-├── customer-subject.ts   account metadata → organization or user
+├── customer-subject.ts   customer.metadata → organization or user
 ├── quantity-lock.ts      the per-organization mutation lease
 ├── pending-changes.ts    the per-organization deferred-quantity ledger (a `setting` row)
 ├── subscriptions.ts      the mutation surface — the only module that changes items
 ├── schedules.ts          deferred changes: subscription-schedule phases, `mutateSubscription`
 ├── entitlements.ts       landed intents → derived server assignment → schedule rebuild, under the lease
 ├── seat-increase.ts      an immediate change's idempotency key + params, persisted before Stripe
-├── checkout.ts           first purchase (hosted Checkout, Stripe is the only record of open sessions) + customer account creation
+├── checkout.ts           first purchase (hosted Checkout, Stripe is the only record of open sessions) + customer creation
 ├── portal.ts             Customer Portal: invoices and payment methods only
 ├── reconcile.ts          maintenance phase: purchased vs held vs covered, alert only
 └── test-clock.ts         /v1/test_helpers/test_clocks, for the live harness only
@@ -72,9 +72,8 @@ Both `TURBOPANEL_STRIPE_SECRET_KEY` and
 `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` are **secrets**
 (`wrangler secret put`), never `vars` in `wrangler.jsonc`; `keep_vars: true`
 protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
-an optional override of the pin below. `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION`
-is an optional override of it for `/v2` (Accounts) calls only.
-`TURBOPANEL_STRIPE_IS_COUPON_ALLOWED` (`1` on, anything else off) is a plain var: when on, Checkout sends
+an optional override of the pin below. `TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
+(`1` on, anything else off) is a plain var: when on, Checkout sends
 `allow_promotion_codes=true` so the customer can type a promotion code. Live
 commits `"0"`; an unfinished Checkout session already handed out keeps the
 setting it was created with.
@@ -135,50 +134,12 @@ direction does not exist.
 
 ## Which subject a customer is
 
-A Stripe **v2 Account** with the `customer` configuration is the customer. It
-names its TurboPanel subject in `metadata`:
+A Stripe `Customer` names its TurboPanel subject in `metadata`:
 `turbopanel_organization_id` **or** `turbopanel_user_id`, exactly one
 (`customer-subject.ts`). The projection reads it from the **refetched**
-account (`GET /v2/core/accounts/{id}`), never the event payload. An account
-naming neither, both, or a malformed id is logged and skipped. This is the same
-exactly-one rule `payer_subject_check` enforces at the table.
-
-Accounts v2 is the only customer model; there is no `Customer` object and no
-dual path:
-
-- `payer.provider_customer_id` now holds the **account id** (`acct_...`). The
-  column name predates Accounts v2 and is unchanged (no migration); a rename is
-  a separate, owner-approved follow-up.
-- Every v1 call that took `customer` takes `customer_account` instead
-  (subscription create, Checkout session and its lists, portal session, tax id
-  list).
-- A subscription's `customer_account` is a plain string and is not expandable,
-  so the projection fetches the account and its tax ids
-  (`GET /v1/tax_ids?owner[type]=customer&owner[customer_account]=...`)
-  separately. An account that is 404 or `closed` skips as `customer_deleted`.
-- `/v2/*` calls (`client.ts`) send a JSON body with `Content-Type:
-application/json` and a required `Stripe-Version`. That is the v1 pin unless
-  `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION` names a different one (a platform
-  outside Connect needs a `.preview` version while Accounts v2 is in preview).
-  v1 calls are unchanged: form bodies, the v1 pin. Stripe's own example for a
-  subscription with `customer_account` also sends a `.preview` version, so a
-  platform outside Connect may need `TURBOPANEL_STRIPE_API_VERSION` on a
-  preview version too; not yet exercised against a sandbox.
-- The account is created with `configuration.customer` and the
-  `automatic_indirect_tax` capability requested (Checkout and subscriptions send
-  `automatic_tax`), and **no `identity`**: Stripe rejects identity fields on a
-  customer-only account (`unsupported_identity_field_for_configs`). Stripe Tax
-  takes the account's shipping address, then its identity address, then the
-  default payment method's billing details; production relies on the card
-  Checkout collects, the harness sets `configuration.customer.shipping`.
-- Checkout still sends `customer_update[address|name]=auto` with
-  `customer_account`. Stripe documents `customer_update` as only valid with
-  `customer` and `customer_account` as behaving the same as `customer`; that
-  pair has not been exercised against a sandbox, so run one Checkout before
-  launch.
-- No new event destination is needed: `customer.subscription.*` and `invoice.*`
-  remain v1 snapshot events, and the projection refetches before reading. v2
-  account events (thin events) are not consumed.
+customer, never the event payload. A customer naming neither, both, or a
+malformed id is logged and skipped. This is the same exactly-one rule
+`payer_subject_check` enforces at the table.
 
 ## The quantity lease
 
@@ -736,10 +697,9 @@ code.
    `not_collecting` and totals carry no tax. Register a test jurisdiction (the
    harness's customers are in California, US) before running the
    proration-sensitive scenarios, or the invoice totals the harness compares
-   will differ from a registered account's. A customer with no
-   address fails `customer_tax_location_invalid` — the harness sets the
-   account's shipping address; production gets the address from the card
-   Checkout collects.
+   will differ from a registered account's. A customer with no address fails
+   `customer_tax_location_invalid` — the harness sets one; production gets it
+   from Checkout's `customer_update[address]=auto`.
 5. **Do not configure Billing Automations in the sandbox.** An account with
    Automations refuses to attach a test clock to an existing customer, and
    although the harness always creates its customers directly on a clock,

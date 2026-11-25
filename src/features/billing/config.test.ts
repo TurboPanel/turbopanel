@@ -7,7 +7,6 @@ import {
   DEFAULT_STRIPE_API_VERSION,
   isCustomerBillingOperational,
   resolveBillingConfig,
-  STRIPE_ACCOUNTS_API_VERSION_ENV,
   STRIPE_API_VERSION_ENV,
   STRIPE_COUPON_ALLOWED_ENV,
   STRIPE_SECRET_KEY_ENV,
@@ -91,18 +90,4 @@ test('customer billing is operational only when both the API key and the signing
     [STRIPE_WEBHOOK_SIGNING_SECRET_ENV]: 'whsec_1',
   })
   assertEquals(isCustomerBillingOperational(both), true)
-})
-
-test('the accounts api version is optional, trimmed, and absent when blank', () => {
-  const base = { [STRIPE_SECRET_KEY_ENV]: 'sk' }
-  assertEquals(resolveBillingConfig(base)?.accountsApiVersion, undefined)
-  assertEquals(
-    resolveBillingConfig({ ...base, [STRIPE_ACCOUNTS_API_VERSION_ENV]: '  ' })?.accountsApiVersion,
-    undefined
-  )
-  assertEquals(
-    resolveBillingConfig({ ...base, [STRIPE_ACCOUNTS_API_VERSION_ENV]: ' 2026-11-18.preview ' })
-      ?.accountsApiVersion,
-    '2026-11-18.preview'
-  )
 })

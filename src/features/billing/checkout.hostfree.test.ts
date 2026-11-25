@@ -47,7 +47,7 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
   })
   const urls = checkoutReturnUrls('https://panel.example.com', ORG)
   const out = await createCheckoutSession(client, {
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     providerPriceId: 'price_S3',
     quantity: 2,
     successUrl: urls.successUrl,
@@ -69,7 +69,7 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
   // a key missing here is a key Stripe silently defaults.
   assertEquals(call.form, [
     ['mode', 'subscription'],
-    ['customer_account', 'acct_1'],
+    ['customer', 'cus_1'],
     ['line_items[0][price]', 'price_S3'],
     ['line_items[0][quantity]', '2'],
     ['automatic_tax[enabled]', 'true'],
@@ -101,7 +101,7 @@ test('T4 · the promotion-code field is sent only when coupons are allowed', asy
     url: 'https://checkout.stripe.com/c/pay/cs_1',
   }))
   const base = {
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     providerPriceId: 'price_S3',
     tierId: 'tier-1',
     quantity: 1,
@@ -155,7 +155,7 @@ test('T4 · a non-positive or fractional quantity is refused before any Stripe c
     object: 'checkout.session',
   }))
   const base = {
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     providerPriceId: 'price_S3',
     successUrl: 's',
     cancelUrl: 'c',
@@ -177,8 +177,8 @@ test('T4 · a non-positive or fractional quantity is refused before any Stripe c
 test('T4 · ensureCustomerForOrganization reuses the projected payer, else creates the customer once under an organization-keyed idempotency key and writes payer immediately', async () => {
   const db = createMemoryDb([[payer, []]])
   const client = createStripeClientDouble((call: StripeCall) => {
-    if (call.method === 'POST' && call.path === '/v2/core/accounts') {
-      return { id: 'acct_new', object: 'v2.core.account' }
+    if (call.method === 'POST' && call.path === '/v1/customers') {
+      return { id: 'cus_new', object: 'customer' }
     }
     throw new Error(`unexpected ${call.method} ${call.path}`)
   })
@@ -188,18 +188,17 @@ test('T4 · ensureCustomerForOrganization reuses the projected payer, else creat
     email: 'owner@example.com',
     now: NOW,
   })
-  assertEquals(first, { providerCustomerId: 'acct_new', created: true })
+  assertEquals(first, { providerCustomerId: 'cus_new', created: true })
   const create = client.calls[0]!
   assertEquals(create.idempotencyKey, windowedIdempotencyKey(`customer:${ORG}`, Date.parse(NOW)))
   assertEquals(create.form, [
-    ['configuration[customer][capabilities][automatic_indirect_tax][requested]', 'true'],
     [`metadata[${STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY}]`, ORG],
-    ['contact_email', 'owner@example.com'],
+    ['email', 'owner@example.com'],
   ])
   // The payer row exists before Checkout is ever created, so the first
   // webhook finds its subject.
   const [row] = db.rows(payer)
-  assertEquals(row?.providerCustomerId, 'acct_new')
+  assertEquals(row?.providerCustomerId, 'cus_new')
   assertEquals(row?.organizationId, ORG)
   assertEquals(row?.userId, null)
 
@@ -209,7 +208,7 @@ test('T4 · ensureCustomerForOrganization reuses the projected payer, else creat
     email: 'owner@example.com',
     now: NOW,
   })
-  assertEquals(second, { providerCustomerId: 'acct_new', created: false })
+  assertEquals(second, { providerCustomerId: 'cus_new', created: false })
   assertEquals(client.calls.length, 1)
   assertEquals(db.rows(payer).length, 1)
 })

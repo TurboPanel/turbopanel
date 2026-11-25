@@ -108,10 +108,10 @@ test('T5 · with no match — an empty list, or only an older version of ours �
   }
 })
 
-test('T5 · a portal session names the configuration, the customer account and the return URL, and hands back the url', async () => {
+test('T5 · a portal session names the configuration, the customer and the return URL, and hands back the url', async () => {
   const client = portalClient([OURS])
   const out = await createPortalSession(client, {
-    providerCustomerId: 'acct_1',
+    providerCustomerId: 'cus_1',
     returnUrl: 'https://panel.example.com/org/billing',
   })
   assertEquals(out, { url: 'https://billing.stripe.com/session/bps_1' })
@@ -121,7 +121,7 @@ test('T5 · a portal session names the configuration, the customer account and t
   )
   const session = client.calls[1]!
   assertEquals(session.form, [
-    ['customer_account', 'acct_1'],
+    ['customer', 'cus_1'],
     ['configuration', 'bpc_ours'],
     ['return_url', 'https://panel.example.com/org/billing'],
   ])
@@ -134,7 +134,7 @@ test('T5 · a session or configuration Stripe returns without its id or url is a
     call.path === '/v1/billing_portal/sessions' ? { id: 'bps_1' } : { object: 'list', data: [OURS] }
   )
   await assertRejects(
-    () => createPortalSession(noUrl, { providerCustomerId: 'acct_1', returnUrl: 'r' }),
+    () => createPortalSession(noUrl, { providerCustomerId: 'cus_1', returnUrl: 'r' }),
     Error,
     'no url'
   )

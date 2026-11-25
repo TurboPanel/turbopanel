@@ -200,8 +200,10 @@ function currentPeriodEnd(sub: StripeObject, items: readonly StripeObject[]): st
   return latest === null ? null : unixToIso(latest)
 }
 
-function firstTaxId(taxIds: readonly StripeObject[]): string | null {
-  const first = taxIds.find(isObject)
+function firstTaxId(customer: StripeObject): string | null {
+  const taxIds = customer.tax_ids
+  if (!isObject(taxIds) || !Array.isArray(taxIds.data)) return null
+  const first = taxIds.data.find(isObject)
   return first ? str(first.value) : null
 }
 
@@ -251,7 +253,7 @@ type ProjectionWrite = Readonly<{
   providerSubscriptionId: string
   providerCustomerId: string
   subject: PayerSubject
-  taxId: string | null
+  customer: StripeObject
   sub: StripeObject
   status: string
   items: readonly StripeObject[]
@@ -278,7 +280,7 @@ async function writeProjectionRows(db: Db, input: ProjectionWrite) {
       provider: 'stripe',
       providerCustomerId: input.providerCustomerId,
       subject: input.subject,
-      taxId: input.taxId,
+      taxId: firstTaxId(input.customer),
       now,
     })
     const { id: subscriptionId, applied } = await upsertSubscriptionFromProvider(tx, {
@@ -314,8 +316,8 @@ async function writeProjectionRows(db: Db, input: ProjectionWrite) {
 const MAX_PROJECTION_PASSES = 3
 
 /**
- * The seam every handled event ends in: refetch one subscription (then its
- * customer account and tax ids), write the three rows, then
+ * The seam every handled event ends in: refetch one subscription (with its
+ * customer and the customer's tax ids expanded), write the three rows, then
  * sync entitlements for the organization it names.
  *
  * Projections run concurrently (deliveries, the retry sweep, mutation
@@ -340,26 +342,19 @@ async function projectSubscriptionPass(
 ): Promise<StripeProjectionOutcome> {
   const readStartedAt = (deps.readClock ?? (() => new Date().toISOString()))()
   const sub = await deps.client.get<StripeObject>(
-    `/v1/subscriptions/${encodeURIComponent(providerSubscriptionId)}`
+    `/v1/subscriptions/${encodeURIComponent(providerSubscriptionId)}`,
+    { expand: ['customer', 'customer.tax_ids'] }
   )
-  // The payer is a v2 Account with the customer configuration: the
-  // subscription names it in `customer_account` (a plain string, never
-  // expandable), so the account and its tax ids are fetched separately.
-  const providerCustomerId = str(sub.customer_account)
+  const customer = isObject(sub.customer) ? sub.customer : null
+  if (!customer || customer.deleted === true) {
+    return { action: 'skipped', reason: 'customer_deleted' }
+  }
+  const providerCustomerId = str(customer.id)
   if (!providerCustomerId) {
     return { action: 'skipped', reason: 'customer_missing' }
   }
-  const account = await deps.client
-    .get<StripeObject>(`/v2/core/accounts/${encodeURIComponent(providerCustomerId)}`)
-    .catch((err: unknown) => {
-      if (err instanceof StripeApiError && err.status === 404) return null
-      throw err
-    })
-  if (!account || account.closed === true) {
-    return { action: 'skipped', reason: 'customer_deleted' }
-  }
 
-  const subject = resolvePayerSubject(account.metadata)
+  const subject = resolvePayerSubject(customer.metadata)
   if (!subject) {
     logWarn(
       STRIPE_PROJECTION_LOG_SCOPE,
@@ -367,14 +362,9 @@ async function projectSubscriptionPass(
     )
     return { action: 'skipped', reason: 'customer_subject_missing' }
   }
+
   const status = str(sub.status)
   if (!status) return { action: 'skipped', reason: 'status_missing' }
-
-  const taxIds = await deps.client.get<StripeObject>('/v1/tax_ids', {
-    owner: { type: 'customer', customer_account: providerCustomerId },
-    limit: 1,
-  })
-  const taxId = firstTaxId(Array.isArray(taxIds.data) ? taxIds.data.filter(isObject) : [])
 
   const items = await loadSubscriptionItems(
     deps.client,
@@ -394,7 +384,7 @@ async function projectSubscriptionPass(
     providerSubscriptionId,
     providerCustomerId,
     subject,
-    taxId,
+    customer,
     sub,
     status,
     items,

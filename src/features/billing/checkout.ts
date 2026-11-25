@@ -1,21 +1,20 @@
 /**
  * Hosted Checkout — the **first** purchase only (C14).
  *
- * The customer (a v2 Account with the customer configuration) is created
- * first, so `metadata[turbopanel_organization_id]` exists before Stripe emits
- * `checkout.session.completed` and the projection can resolve its subject.
- * Every later quantity or tier change goes through `subscriptions.ts` /
- * `schedules.ts`, never a second Checkout.
+ * The customer is created first, so `metadata[turbopanel_organization_id]`
+ * exists before Stripe emits `checkout.session.completed` and the
+ * projection can resolve its subject. Every later quantity or tier change
+ * goes through `subscriptions.ts` / `schedules.ts`, never a second
+ * Checkout.
  *
  * The session carries the same anchor and billing-mode invariant as a
  * direct `POST /v1/subscriptions` (`SUBSCRIPTION_ANCHOR_PARAMS`, verified
  * accepted under `subscription_data` on `2025-08-27.basil`, not yet
  * re-verified on the pinned `2026-11-18.endive`). Tax: automatic tax on,
- * tax-id collection on, and `customer_update[address|name]=auto` so Checkout
- * may write what it collects onto the existing customer. Stripe documents
- * `customer_update` as "can only be provided when `customer` is provided" and
- * `customer_account` as "the same behavior as `customer`"; whether the pair is
- * accepted is unverified and needs a sandbox Checkout before launch.
+ * tax-id collection on, and
+ * `customer_update[address|name]=auto` so Checkout may write what it
+ * collects onto the existing customer — Stripe requires both when a
+ * `customer` is passed with `tax_id_collection`.
  *
  * Workers-bundleable: nothing at module load.
  */
@@ -176,7 +175,7 @@ export async function createCheckoutSession(
     '/v1/checkout/sessions',
     {
       mode: 'subscription',
-      customer_account: input.providerCustomerId,
+      customer: input.providerCustomerId,
       line_items: [{ price: input.providerPriceId, quantity: input.quantity }],
       automatic_tax: { enabled: true },
       tax_id_collection: { enabled: true },
@@ -282,7 +281,7 @@ export async function openCheckoutSession(
   input: OpenCheckoutInput
 ): Promise<OpenCheckoutOutcome> {
   const { nowMs } = input
-  const listQuery = { customer_account: input.providerCustomerId }
+  const listQuery = { customer: input.providerCustomerId }
   const recentlyPaid = await client.listAll<StripeObject>('/v1/checkout/sessions', {
     ...listQuery,
     status: 'complete',

@@ -41,7 +41,7 @@ channel and do not apply to a `.endive` pin.
   (2026-10-28). Opt-in subscriptions; snapshot event payloads we parse are
   unchanged.
 - Customers, subscription schedules, test clocks: no entries.
-- Accounts v2 (`/v2/core/accounts`, relevant to PR #1038): only additive
+- Accounts v2 (`/v2/core/accounts`, not used: billing uses v1 customers): only additive
   capability and parameter entries (Pix, PayPay, Billie, MB WAY, NZ BECS,
   Konbini additional material, Express accounts with Stripe pricing, dashboard
   access on Account Links v2, alternative requirements). Nothing breaking.
